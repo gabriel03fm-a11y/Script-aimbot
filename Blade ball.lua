@@ -1,11 +1,10 @@
 --[[
-    BLADE BALL SUITE — v3.0 "GHOST"
-    Foco: anti-detect via humanização estatística.
-    - Timing gaussiano (não uniforme) em TODOS os pontos de decisão
-    - Reação comprometida POR AMEAÇA (não re-rolada por frame)
-    - Ruído de "leitura" na posição/velocidade da bola
-    - Double-tap ocasional (humano clica 2x)
-    - legitMode agora afeta o comportamento de verdade
+    BLADE BALL SUITE — v4.0 "GHOST-CLEAN"
+    Anti-detect:
+      - parry emitido de um ambiente LIMPO (sem writefile) -> burla o probe getfenv
+      - sem hooks (__namecall/__index) -> sem detecção de hook
+      - bypass opcional do canal de report do AC
+      - humanização estatística mantida
 ]]
 
 local function MAIN()
@@ -29,17 +28,14 @@ local function MAIN()
     local CONFIG_FOLDER = "BladeBallSuite"
     local PARRY_COOLDOWN = 0.5
 
-    -- ═══════════════ CONFIG ═══════════════
     local DEFAULT_CONFIG = {
         autoParryEnabled=false, manualSpamEnabled=false,
-        delayMs=0, parryRange=24, sensitivity=50,
+        delayMs=0, parryRange=40, sensitivity=50,
         legitMode=false, fastReactMode=false, antiRepeatEnabled=true,
         stealthMode=true, missChance=4,
-        -- ── novos parâmetros de humanização ──
-        legitReactionBase=110,   -- ms base de reação
-        legitReactionSpread=35,  -- ms de desvio (gaussiano)
-        doubleTapChance=10,      -- % de chance de clicar 2x
-        readingNoise=2,          -- % de erro ao "ler" a bola
+        legitReactionBase=450, legitReactionSpread=120,
+        doubleTapChance=10, readingNoise=2,
+        antiCheatBypass=true, parryMethod="VIM",   -- "VIM" | "Remote"
         ballESP=false, ballHighlight=false, showTrajectory=false,
         showDistance=false, showSpeed=false, playerESP=false,
         playerHighlight=false, showThreatIndicator=true,
@@ -97,12 +93,60 @@ local function MAIN()
         currentBall=nil, ballTarget=nil, ballDistance=math.huge,
         ballSpeed=0, ballPosition=Vector3.zero,
         localHRP=nil, lastParryTime=0,
-        -- modelo de ameaça "commit"
-        threatActive=false, committedThreshold=0.11,
+        threatActive=false, committedThreshold=0.45,
         missThisThreat=false, willDouble=false, doubleDone=false,
         turboActive=false,
         fps=0, ping=0, ui={},
     }
+
+    -- ═══════════════ ANTI-DETECT ═══════════════
+    -- (1) Click emitido de um ambiente sem globais do executor.
+    --     O AC roda getfenv(1..10) dentro do sender do parry; se achar
+    --     'writefile' em qualquer frame, reporta -> kick. Ambiente limpo evita isso.
+    local AntiDetect = {}
+
+    function AntiDetect.buildCleanClick()
+        local src = [[return function(x, y, down)
+            game:GetService("VirtualInputManager"):SendMouseButtonEvent(x, y, 0, down, game, 0)
+        end]]
+        local ok, fn = pcall(function()
+            local chunk = loadstring(src, "=ReplicatedStorage.Packages._Index.sleitnick_net@0.1.0.net")
+            if chunk then return chunk() end
+        end)
+        if ok and type(fn) == "function" then
+            -- ambiente SEM writefile / getrenv / etc.
+            pcall(function() setfenv(fn, { game = game }) end)
+            return fn
+        end
+        -- fallback (funciona, mas roda no env global)
+        return function(x, y, down)
+            VirtualInputManager:SendMouseButtonEvent(x, y, 0, down, game, 0)
+        end
+    end
+
+    -- (2) Bypass opcional do canal de report do AC (best-effort).
+    function AntiDetect.runBypass()
+        if not config:get("antiCheatBypass") then return false end
+        local did = false
+        pcall(function()
+            local rs = game:GetService("ReplicatedStorage")
+            local sec = rs:FindFirstChild("Security")
+            if sec then
+                for _, c in ipairs(sec:GetChildren()) do pcall(function() c:Destroy() end) end
+                pcall(function() sec:Destroy() end)
+                did = true
+            end
+        end)
+        pcall(function()
+            local ps = LocalPlayer:FindFirstChild("PlayerScripts")
+            local client = ps and ps:FindFirstChild("Client")
+            local dc = client and client:FindFirstChild("DeviceChecker")
+            if dc then dc:Destroy(); did = true end
+        end)
+        return did
+    end
+
+    local cleanClick = AntiDetect.buildCleanClick()
 
     -- ═══════════════ BALL TRACKER ═══════════════
     local BallTracker = {}
@@ -140,19 +184,12 @@ local function MAIN()
     -- ═══════════════ STEALTH / HUMANIZAÇÃO ═══════════════
     local Stealth = {}
     function Stealth.gauss()
-        -- Box-Muller: distribuição normal padrão
         local u1 = math.max(math.random(), 1e-6)
         local u2 = math.random()
         return math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
     end
     local function gclamp(mean, sd, lo, hi)
         return math.clamp(mean + Stealth.gauss() * sd, lo, hi)
-    end
-    Stealth.gclamp = gclamp
-
-    function Stealth.thresholdJitter(base)
-        if not config:get("stealthMode") then return base end
-        return base * (1 + Stealth.gauss() * 0.15)
     end
 
     function Stealth.clickPoint()
@@ -161,7 +198,6 @@ local function MAIN()
         if not config:get("stealthMode") then
             return math.floor(vp.X / 2), math.floor(vp.Y / 2)
         end
-        -- deslocamento gaussiano: a maioria dos cliques perto do centro, alguns longe
         local sx, sy = vp.X * 0.05, vp.Y * 0.05
         local x = vp.X / 2 + Stealth.gauss() * sx
         local y = vp.Y / 2 + Stealth.gauss() * sy
@@ -171,7 +207,6 @@ local function MAIN()
 
     function Stealth.holdTime()
         if not config:get("stealthMode") then return 0.02 end
-        -- pressão de botão ~26ms, variação gaussiana (10–65ms)
         return gclamp(0.026, 0.011, 0.008, 0.065)
     end
 
@@ -187,8 +222,6 @@ local function MAIN()
 
         local ballPos, hrpPos = State.ballPosition, hrp.Position
         local dist  = (hrpPos - ballPos).Magnitude
-
-        -- ruído de "leitura": o script não lê a posição com precisão perfeita
         if config:get("stealthMode") then
             dist = dist * (1 + Stealth.gauss() * ((cfg.readingNoise or 2) / 100))
         end
@@ -204,23 +237,30 @@ local function MAIN()
         return true, dist, dist / math.max(speed, 0.1)
     end
 
-    -- Chamado UMA vez por ameaça (commit). O tempo de reação vira alvo fixo,
-    -- então cada parry sai num offset diferente -> quebra o padrão robótico.
     function ThreatAnalyzer:getParryThreshold(cfg)
-        local base = (cfg.legitReactionBase or 110) / 1000
-        base = base + ((50 - cfg.sensitivity) / 100) * 0.08
+        local base = (cfg.legitReactionBase or 450) / 1000
+        base = base + ((50 - cfg.sensitivity) / 100) * 0.15
         base = base + (cfg.delayMs / 1000)
         if cfg.fastReactMode then base = base * 0.7 end
-        if config:get("legitMode") then base = base + 0.015 end
-
+        if config:get("legitMode") then base = base + 0.03 end
         if config:get("stealthMode") then
-            base = base + Stealth.gauss() * ((cfg.legitReactionSpread or 35) / 1000)
+            base = base + Stealth.gauss() * ((cfg.legitReactionSpread or 120) / 1000)
         end
         return math.max(0.02, base)
     end
     local threatAnalyzer = ThreatAnalyzer.new()
 
     -- ═══════════════ PARRY ENGINE ═══════════════
+    local _parryRemote
+    local function getParryRemote()
+        if _parryRemote and _parryRemote.Parent then return _parryRemote end
+        local rs = game:GetService("ReplicatedStorage")
+        local rem = rs:FindFirstChild("Remotes")
+        local r = rem and rem:FindFirstChild("ParryButtonPress")
+        _parryRemote = r
+        return r
+    end
+
     local ParryEngine = {}
     ParryEngine.__index = ParryEngine
     function ParryEngine.new() return setmetatable({}, ParryEngine) end
@@ -247,14 +287,25 @@ local function MAIN()
             if now - State.lastParryTime < ParryEngine:getCooldown() then return false end
             if config:get("antiRepeatEnabled") and (now - State.lastParryTime) < 0.05 then return false end
         end
-
         State.lastParryTime = now
+
+        -- Método "Remote": dispara o remote do jogo direto (o sender não roda -> sem probe)
+        if config:get("parryMethod") == "Remote" then
+            local r = getParryRemote()
+            if r then
+                return pcall(function()
+                    if r:IsA("RemoteEvent") then r:FireServer() else r:Fire() end
+                end)
+            end
+        end
+
+        -- Método "VIM": clique real via ambiente limpo
         local cx, cy = Stealth.clickPoint()
         local hold   = Stealth.holdTime()
         return pcall(function()
-            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true,  game, 0)
+            cleanClick(cx, cy, true)
             task.wait(hold)
-            VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 0)
+            cleanClick(cx, cy, false)
         end)
     end
 
@@ -277,7 +328,6 @@ local function MAIN()
 
         local isThreat, _, tti = threatAnalyzer:isThreat(config.data)
 
-        -- início de nova ameaça: "compromete" um tempo de reação e decide miss/double
         if isThreat and not State.threatActive then
             State.threatActive = true
             State.doubleDone = false
@@ -302,8 +352,6 @@ local function MAIN()
 
         if isThreat and not State.missThisThreat and tti <= State.committedThreshold then
             ParryEngine:executeParry()
-
-            -- double-tap: humano às vezes clica 2x, com espaçamento curto variável
             if State.willDouble and not State.doubleDone then
                 State.doubleDone = true
                 local d = math.random(55, 130) / 1000
@@ -313,23 +361,19 @@ local function MAIN()
     end
     local parryEngine = ParryEngine.new()
 
-    -- ═══════════════ MANUAL SPAM OVERLAY (AP / TB funcionais) ═══════════════
+    -- ═══════════════ MANUAL SPAM OVERLAY ═══════════════
     local ManualSpam = {}
     ManualSpam.__index = ManualSpam
     function ManualSpam.new() return setmetatable({ _mode="AP", _frame=nil }, ManualSpam) end
-
     function ManualSpam:create(parent, touch)
         local w, h = touch and 118 or 96, touch and 46 or 32
         local modeW = touch and 42 or 34
-
         local frame = Instance.new("Frame")
         frame.Name = "ManualSpamButton"
         frame.Size = UDim2.new(0, w, 0, h)
         frame.Position = UDim2.new(0.5, -w/2, 0.86, 0)
         frame.BackgroundColor3 = Color3.fromRGB(255, 140, 0)
-        frame.BorderSizePixel = 0
-        frame.Visible = false
-        frame.ZIndex = 50
+        frame.BorderSizePixel = 0; frame.Visible = false; frame.ZIndex = 50
         frame.Parent = parent
         local corner = Instance.new("UICorner"); corner.CornerRadius = UDim.new(0, 8); corner.Parent = frame
         local stroke = Instance.new("UIStroke")
@@ -424,8 +468,7 @@ local function MAIN()
             p.Size = Vector3.new(0.3, 0.3, 0.3)
             p.Anchored = true; p.CanCollide = false; p.CanQuery = false; p.CanTouch = false
             p.Material = Enum.Material.Neon
-            p.Color = Color3.fromRGB(255, 140, 0)
-            p.Transparency = 1
+            p.Color = Color3.fromRGB(255, 140, 0); p.Transparency = 1
             p.Parent = folder
             table.insert(self._trajPool, p)
         end
@@ -564,15 +607,6 @@ local function MAIN()
             if self._frame % 2 == 0 then self:updatePlayerESP() end
         end))
     end
-    function Visuals:stop()
-        for _, p in ipairs(self._trajPool) do pcall(function() p:Destroy() end) end
-        self._trajPool = {}
-        if self._trajFolder then self._trajFolder:Destroy() end
-        for _, gui in pairs(self._playerGuis) do gui:Destroy() end
-        self._playerGuis = {}
-        if self._highlight then self._highlight:Destroy() self._highlight = nil end
-        if self._espGui then self._espGui:Destroy() self._espGui = nil end
-    end
     local visuals = Visuals.new()
 
     -- ═══════════════ UI CORE ═══════════════
@@ -600,7 +634,6 @@ local function MAIN()
         titleFont=14, labelFont=13, btnFont=12, pad=12,
     }
     local D = DIMS_DESKTOP
-
     local function isTouch() return UserInputService.TouchEnabled end
     local function getViewport()
         local cam = workspace.CurrentCamera
@@ -614,8 +647,7 @@ local function MAIN()
 
     local UICore = {}
     UICore.__index = UICore
-    function UICore.new() return setmetatable({ toggleStates={} }, UICore) end
-
+    function UICore.new() return setmetatable({}, UICore) end
     function UICore:_create(cls, props, parent)
         local obj = Instance.new(cls)
         for k, v in pairs(props or {}) do
@@ -624,20 +656,16 @@ local function MAIN()
         if parent then obj.Parent = parent end
         return obj
     end
-
     function UICore:_createToggle(parent, labelText, configKey, callback)
         local frame = self:_create("Frame", {
-            Name = "Toggle_" .. configKey,
-            Size = UDim2.new(1, -20, 0, D.rowToggleH),
+            Name = "Toggle_" .. configKey, Size = UDim2.new(1, -20, 0, D.rowToggleH),
             BackgroundColor3 = COLORS.panelAlt, BorderSizePixel = 0,
         }, parent)
         self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, frame)
         self:_create("TextLabel", {
-            Size = UDim2.new(1, -(D.toggleTrackW + 30), 1, 0),
-            Position = UDim2.new(0, D.pad, 0, 0),
-            BackgroundTransparency = 1, Text = labelText,
-            TextColor3 = COLORS.text, TextSize = D.labelFont, Font = Enum.Font.Gotham,
-            TextXAlignment = Enum.TextXAlignment.Left,
+            Size = UDim2.new(1, -(D.toggleTrackW + 30), 1, 0), Position = UDim2.new(0, D.pad, 0, 0),
+            BackgroundTransparency = 1, Text = labelText, TextColor3 = COLORS.text,
+            TextSize = D.labelFont, Font = Enum.Font.Gotham, TextXAlignment = Enum.TextXAlignment.Left,
         }, frame)
         local track2 = self:_create("Frame", {
             Size = UDim2.new(0, D.toggleTrackW, 0, D.toggleTrackH),
@@ -652,31 +680,25 @@ local function MAIN()
         }, track2)
         self:_create("UICorner", { CornerRadius = UDim.new(1, 0) }, knob)
         local btn = self:_create("TextButton", { Size = UDim2.new(1,0,1,0), BackgroundTransparency = 1, Text = "" }, frame)
-
         local onX = D.toggleTrackW - D.toggleKnob - 3
         local state = config:get(configKey) or false
         local function updateVisual(on)
-            TweenService:Create(track2, TweenInfo.new(0.2), {
-                BackgroundColor3 = on and COLORS.accent or COLORS.border }):Play()
+            TweenService:Create(track2, TweenInfo.new(0.2), { BackgroundColor3 = on and COLORS.accent or COLORS.border }):Play()
             TweenService:Create(knob, TweenInfo.new(0.2), {
                 Position = UDim2.new(0, on and onX or 3, 0.5, -D.toggleKnob/2),
                 BackgroundColor3 = on and Color3.new(1,1,1) or COLORS.textDim }):Play()
         end
         updateVisual(state)
         btn.MouseButton1Click:Connect(function()
-            state = not state
-            config:set(configKey, state)
-            updateVisual(state)
+            state = not state; config:set(configKey, state); updateVisual(state)
             if callback then pcall(callback, state) end
         end)
         return frame
     end
-
     function UICore:_createSlider(parent, labelText, configKey, min, max, suffix)
         suffix = suffix or ""
         local frame = self:_create("Frame", {
-            Size = UDim2.new(1, -20, 0, D.sliderH),
-            BackgroundColor3 = COLORS.panelAlt, BorderSizePixel = 0,
+            Size = UDim2.new(1, -20, 0, D.sliderH), BackgroundColor3 = COLORS.panelAlt, BorderSizePixel = 0,
         }, parent)
         self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, frame)
         self:_create("TextLabel", {
@@ -703,7 +725,6 @@ local function MAIN()
             Position = UDim2.new(0, -D.pad, 0.5, -D.sliderDragH/2),
             BackgroundTransparency = 1, Text = "",
         }, trackBg)
-
         local function updateFromValue(val)
             val = math.clamp(val, min, max)
             local pct = (val - min) / math.max(max - min, 0.0001)
@@ -712,7 +733,6 @@ local function MAIN()
             config:set(configKey, val)
         end
         updateFromValue(config:get(configKey) or min)
-
         local dragging = false
         local function processInput(input)
             local tp, ts = trackBg.AbsolutePosition, trackBg.AbsoluteSize
@@ -733,423 +753,12 @@ local function MAIN()
         end))
         return frame
     end
-
     function UICore:_createInput(parent, labelText, configKey, placeholder, isKeybind)
         local frame = self:_create("Frame", {
-            Size = UDim2.new(1, -20, 0, D.inputH),
-            BackgroundColor3 = COLORS.panelAlt, BorderSizePixel = 0,
+            Size = UDim2.new(1, -20, 0, D.inputH), BackgroundColor3 = COLORS.panelAlt, BorderSizePixel = 0,
         }, parent)
         self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, frame)
         self:_create("TextLabel", {
             Size = UDim2.new(0.55, 0, 1, 0), Position = UDim2.new(0, D.pad, 0, 0),
             BackgroundTransparency = 1, Text = labelText, TextColor3 = COLORS.text,
-            TextSize = D.labelFont, Font = Enum.Font.Gotham, TextXAlignment = Enum.TextXAlignment.Left,
-        }, frame)
-        local boxW = isTouch() and 96 or 72
-        local box = self:_create("TextBox", {
-            Size = UDim2.new(0, boxW, 0, D.inputH - 12),
-            Position = UDim2.new(1, -(boxW + D.pad), 0.5, -(D.inputH - 12)/2),
-            BackgroundColor3 = COLORS.bg, Text = tostring(config:get(configKey) or ""),
-            TextColor3 = COLORS.accent, TextSize = D.labelFont, Font = Enum.Font.GothamBold,
-            PlaceholderText = placeholder or "", PlaceholderColor3 = COLORS.textDim,
-            ClearTextOnFocus = false,
-        }, frame)
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 5) }, box)
-        box.FocusLost:Connect(function()
-            local txt = box.Text
-            if isKeybind then
-                config:set(configKey, (txt ~= "" and txt) or (placeholder or ""))
-            else
-                config:set(configKey, tonumber(txt) or txt)
-            end
-        end)
-        return frame
-    end
-
-    function UICore:notify(title, text, duration)
-        if not config:get("notifications") or not self.screenGui then return end
-        duration = duration or 3
-        if not self._notifContainer or not self._notifContainer.Parent then
-            local touch = isTouch()
-            self._notifContainer = self:_create("Frame", {
-                Name = "Notifications",
-                Size = touch and UDim2.new(1, -20, 0, 320) or UDim2.new(0, 240, 1, -20),
-                Position = touch and UDim2.new(0, 10, 0, 10) or UDim2.new(1, -250, 0, 10),
-                BackgroundTransparency = 1, ZIndex = 500,
-            }, self.screenGui)
-            self:_create("UIListLayout", {
-                SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 5),
-                HorizontalAlignment = touch and Enum.HorizontalAlignment.Center or Enum.HorizontalAlignment.Right,
-            }, self._notifContainer)
-        end
-        local notif = self:_create("Frame", {
-            Size = UDim2.new(1, 0, 0, 42), BackgroundColor3 = COLORS.panel, BorderSizePixel = 0,
-        }, self._notifContainer)
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, notif)
-        self:_create("UIStroke", { Color = COLORS.accent, Thickness = 1, Transparency = 0.6 }, notif)
-        self:_create("TextLabel", {
-            Size = UDim2.new(1, -20, 0, 18), Position = UDim2.new(0, 12, 0, 4),
-            BackgroundTransparency = 1, Text = title, TextColor3 = COLORS.accent,
-            TextSize = math.max(D.labelFont - 1, 10), Font = Enum.Font.GothamBold,
-            TextXAlignment = Enum.TextXAlignment.Left,
-        }, notif)
-        self:_create("TextLabel", {
-            Size = UDim2.new(1, -20, 0, 16), Position = UDim2.new(0, 12, 0, 22),
-            BackgroundTransparency = 1, Text = text, TextColor3 = COLORS.textDim,
-            TextSize = math.max(D.labelFont - 2, 9), Font = Enum.Font.Gotham,
-            TextXAlignment = Enum.TextXAlignment.Left,
-        }, notif)
-        local touch = isTouch()
-        local startPos = touch and UDim2.new(0, 0, 0, -50) or UDim2.new(1, 40, 0, 0)
-        notif.Position = startPos
-        TweenService:Create(notif, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
-            { Position = UDim2.new(0,0,0,0) }):Play()
-        task.delay(duration, function()
-            if notif and notif.Parent then
-                local tw = TweenService:Create(notif, TweenInfo.new(0.3), { Position = startPos, BackgroundTransparency = 1 })
-                tw:Play(); tw.Completed:Connect(function() notif:Destroy() end)
-            end
-        end)
-    end
-
-    function UICore:build()
-        D = isTouch() and DIMS_TOUCH or DIMS_DESKTOP
-        local pg = LocalPlayer:WaitForChild("PlayerGui", 10)
-        if not pg then error("PlayerGui não encontrado após 10s") end
-        local existing = pg:FindFirstChild("BladeBallSuite")
-        if existing then existing:Destroy() end
-
-        self.screenGui = self:_create("ScreenGui", {
-            Name = "BladeBallSuite", ResetOnSpawn = false,
-            ZIndexBehavior = Enum.ZIndexBehavior.Sibling, IgnoreGuiInset = not isTouch(),
-        }, pg)
-        State.ui.screenGui = self.screenGui
-
-        local main = self:_create("Frame", {
-            Name = "MainWindow", Size = UDim2.new(0, D.windowW, 0, D.windowH),
-            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
-            BackgroundColor3 = COLORS.bg, BorderSizePixel = 0, ClipsDescendants = true,
-        }, self.screenGui)
-        self.mainFrame = main
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 10) }, main)
-        self:_create("UIStroke", { Color = COLORS.border, Thickness = 1 }, main)
-
-        local uiscl = Instance.new("UIScale")
-        uiscl.Scale = computeUIScale(getViewport())
-        uiscl.Parent = main
-        local cam = workspace.CurrentCamera
-        if cam then
-            track(cam:GetPropertyChangedSignal("ViewportSize"):Connect(function()
-                if uiscl and uiscl.Parent then uiscl.Scale = computeUIScale(getViewport()) end
-            end))
-        end
-
-        local titleBar = self:_create("Frame", {
-            Name = "TitleBar", Size = UDim2.new(1, 0, 0, D.titleBarH),
-            BackgroundColor3 = COLORS.panel, BorderSizePixel = 0,
-        }, main)
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 10) }, titleBar)
-        self:_create("Frame", {
-            Size = UDim2.new(1, 0, 0, 10), Position = UDim2.new(0, 0, 1, -10),
-            BackgroundColor3 = COLORS.panel, BorderSizePixel = 0,
-        }, titleBar)
-        self:_create("TextLabel", {
-            Size = UDim2.new(1, -70, 1, 0), Position = UDim2.new(0, 12, 0, 0),
-            BackgroundTransparency = 1, Text = "⚔  BLADE BALL SUITE",
-            TextColor3 = COLORS.accent, TextSize = D.titleFont, Font = Enum.Font.GothamBold,
-            TextXAlignment = Enum.TextXAlignment.Left,
-        }, titleBar)
-
-        local closeSize = isTouch() and 30 or 22
-        local closeBtn = self:_create("TextButton", {
-            Size = UDim2.new(0, closeSize, 0, closeSize),
-            Position = UDim2.new(1, -(closeSize + 8), 0.5, -closeSize/2),
-            BackgroundColor3 = COLORS.red, Text = "✕", TextColor3 = Color3.new(1,1,1),
-            TextSize = isTouch() and 16 or 12, Font = Enum.Font.GothamBold,
-        }, titleBar)
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, closeBtn)
-        closeBtn.MouseButton1Click:Connect(function()
-            main.Visible = false
-            if State.ui.floatingBtn then State.ui.floatingBtn.Visible = true end
-        end)
-
-        local titleDrag = self:_create("TextButton", {
-            Size = UDim2.new(1, -(closeSize + 20), 1, 0), BackgroundTransparency = 1, Text = "",
-        }, titleBar)
-        local dragging, dragStart, startPos
-        titleDrag.InputBegan:Connect(function(i)
-            if i.UserInputType == Enum.UserInputType.MouseButton1
-            or i.UserInputType == Enum.UserInputType.Touch then
-                dragging = true; dragStart = i.Position; startPos = main.Position
-            end
-        end)
-        track(UserInputService.InputChanged:Connect(function(i)
-            if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement
-            or i.UserInputType == Enum.UserInputType.Touch) then
-                local d = i.Position - dragStart
-                main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X,
-                                          startPos.Y.Scale, startPos.Y.Offset + d.Y)
-            end
-        end))
-        track(UserInputService.InputEnded:Connect(function(i)
-            if i.UserInputType == Enum.UserInputType.MouseButton1
-            or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
-        end))
-
-        local tabBar = self:_create("Frame", {
-            Name = "TabBar", Size = UDim2.new(1, 0, 0, D.tabBarH),
-            Position = UDim2.new(0, 0, 0, D.titleBarH), BackgroundColor3 = COLORS.panel, BorderSizePixel = 0,
-        }, main)
-        self:_create("UIListLayout", {
-            FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 5),
-            VerticalAlignment = Enum.VerticalAlignment.Center,
-        }, tabBar)
-        self:_create("UIPadding", { PaddingLeft = UDim.new(0, 10) }, tabBar)
-
-        local content = self:_create("Frame", {
-            Name = "Content", Size = UDim2.new(1, 0, 1, -(D.titleBarH + D.tabBarH)),
-            Position = UDim2.new(0, 0, 0, D.titleBarH + D.tabBarH), BackgroundTransparency = 1,
-        }, main)
-
-        local tabNames = { "Combat", "Visuals", "Settings" }
-        local tabContents, tabButtons = {}, {}
-        for i, name in ipairs(tabNames) do
-            local tabBtn = self:_create("TextButton", {
-                Name = "Tab_" .. name, Size = UDim2.new(0, D.tabBtnW, 0, D.tabBtnH),
-                BackgroundColor3 = (i == 1) and COLORS.accent or COLORS.panelAlt, Text = name,
-                TextColor3 = (i == 1) and Color3.new(1,1,1) or COLORS.textDim,
-                TextSize = D.btnFont, Font = Enum.Font.GothamBold,
-            }, tabBar)
-            self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, tabBtn)
-            tabButtons[name] = tabBtn
-
-            local scroll = self:_create("ScrollingFrame", {
-                Name = "Scroll_" .. name, Size = UDim2.new(1, -16, 1, -8), Position = UDim2.new(0, 8, 0, 4),
-                BackgroundTransparency = 1, BorderSizePixel = 0, ScrollBarThickness = D.scrollThickness,
-                ScrollBarImageColor3 = COLORS.accent, CanvasSize = UDim2.new(0,0,0,0), Visible = (i == 1),
-            }, content)
-            self:_create("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 5) }, scroll)
-            tabContents[name] = scroll
-
-            tabBtn.MouseButton1Click:Connect(function()
-                for _, other in pairs(tabButtons) do
-                    other.BackgroundColor3 = COLORS.panelAlt; other.TextColor3 = COLORS.textDim
-                end
-                tabBtn.BackgroundColor3 = COLORS.accent; tabBtn.TextColor3 = Color3.new(1,1,1)
-                for _, sc in pairs(tabContents) do sc.Visible = false end
-                scroll.Visible = true
-            end)
-        end
-        for _, scroll in pairs(tabContents) do
-            local layout = scroll:FindFirstChildOfClass("UIListLayout")
-            local function upd()
-                if layout then scroll.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 10) end
-            end
-            if layout then track(layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(upd)) end
-            track(scroll.ChildAdded:Connect(function() task.defer(upd) end))
-            track(scroll.ChildRemoved:Connect(function() task.defer(upd) end))
-            task.defer(upd)
-        end
-
-        local combat = tabContents["Combat"]
-        self:_create("TextLabel", {
-            Size = UDim2.new(1, -16, 0, 20), BackgroundTransparency = 1, Text = "⚔  COMBAT",
-            TextColor3 = COLORS.accent, TextSize = D.titleFont, Font = Enum.Font.GothamBold,
-            TextXAlignment = Enum.TextXAlignment.Left,
-        }, combat)
-        self:_createToggle(combat, "Auto Parry", "autoParryEnabled", function(on)
-            self:notify("Auto Parry", on and "Ativado" or "Desativado", 2)
-        end)
-        self:_createToggle(combat, "Manual Spam (AP / TB)", "manualSpamEnabled", function(on)
-            if State.ui.manualSpamBtn then State.ui.manualSpamBtn:setVisible(on) end
-            self:notify("Manual Spam", on and "Ativado" or "Desativado", 2)
-        end)
-        self:_createSlider(combat, "Delay (ms)", "delayMs", -100, 200, " ms")
-        self:_createSlider(combat, "Range", "parryRange", 5, 60, " studs")
-        self:_createSlider(combat, "Sensitivity", "sensitivity", 0, 100, "%")
-        self:_createToggle(combat, "Legit Mode", "legitMode")
-        self:_createToggle(combat, "Fast React", "fastReactMode")
-        self:_createToggle(combat, "Anti-Repeat", "antiRepeatEnabled")
-        self:_createSlider(combat, "Spam Frequency", "spamFrequency", 10, 500, " ms")
-        self:_createToggle(combat, "Stealth Mode", "stealthMode")
-        self:_createSlider(combat, "Miss Chance", "missChance", 0, 15, "%")
-        -- novos controles de humanização
-        self:_createSlider(combat, "Legit Reaction", "legitReactionBase", 60, 260, " ms")
-        self:_createSlider(combat, "Reaction Spread", "legitReactionSpread", 5, 120, " ms")
-        self:_createSlider(combat, "Double Tap", "doubleTapChance", 0, 40, "%")
-        self:_createSlider(combat, "Reading Noise", "readingNoise", 0, 10, "%")
-
-        local vis = tabContents["Visuals"]
-        self:_create("TextLabel", {
-            Size = UDim2.new(1, -16, 0, 20), BackgroundTransparency = 1, Text = "👁  VISUALS",
-            TextColor3 = COLORS.accent, TextSize = D.titleFont, Font = Enum.Font.GothamBold,
-            TextXAlignment = Enum.TextXAlignment.Left,
-        }, vis)
-        self:_createToggle(vis, "Ball ESP", "ballESP")
-        self:_createToggle(vis, "Ball Highlight", "ballHighlight")
-        self:_createToggle(vis, "Show Trajectory", "showTrajectory")
-        self:_createToggle(vis, "Show Distance", "showDistance")
-        self:_createToggle(vis, "Show Speed", "showSpeed")
-        self:_createToggle(vis, "Player ESP", "playerESP")
-        self:_createToggle(vis, "Threat Indicator", "showThreatIndicator")
-
-        local st = tabContents["Settings"]
-        self:_create("TextLabel", {
-            Size = UDim2.new(1, -16, 0, 20), BackgroundTransparency = 1, Text = "⚙  SETTINGS",
-            TextColor3 = COLORS.accent, TextSize = D.titleFont, Font = Enum.Font.GothamBold,
-            TextXAlignment = Enum.TextXAlignment.Left,
-        }, st)
-        self:_createToggle(st, "Notificações", "notifications")
-        self:_createInput(st, "Tecla — Menu",        "keybindMenu",       "RightShift", true)
-        self:_createInput(st, "Tecla — Auto Parry",  "keybindAutoParry",  "F",          true)
-        self:_createInput(st, "Tecla — Manual Spam", "keybindManualSpam", "G",          true)
-        self:_createInput(st, "Tecla — ESP",         "keybindESP",        "H",          true)
-        self:_createInput(st, "Tecla — Legit Mode",  "keybindLegitMode",  "J",          true)
-
-        local btnRow = self:_create("Frame", { Size = UDim2.new(1, -16, 0, D.btnRowH), BackgroundTransparency = 1 }, st)
-        local function makeButton(label, color, xPos, onClick)
-            local b = self:_create("TextButton", {
-                Size = UDim2.new(0.32, -4, 1, 0), Position = UDim2.new(xPos, 0, 0, 0),
-                BackgroundColor3 = color, Text = label, TextColor3 = Color3.new(1,1,1),
-                TextSize = D.btnFont, Font = Enum.Font.GothamBold,
-            }, btnRow)
-            self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
-            b.MouseButton1Click:Connect(onClick)
-        end
-        makeButton("Salvar",   COLORS.green, 0.00, function()
-            self:notify("Config", config:save() and "Salvo!" or "Falha ao salvar.", 2) end)
-        makeButton("Carregar", Color3.fromRGB(60,120,200), 0.34, function()
-            self:notify("Config", config:load() and "Carregado!" or "Nada salvo.", 2) end)
-        makeButton("Reset",    COLORS.red, 0.68, function()
-            config:reset(); self:notify("Config", "Restaurado.", 2) end)
-
-        local fbSize = isTouch() and 50 or 38
-        local floatingBtn = self:_create("TextButton", {
-            Name = "FloatingButton", Size = UDim2.new(0, fbSize, 0, fbSize),
-            Position = UDim2.new(0, 16, 0.5, -fbSize/2), BackgroundColor3 = COLORS.accent,
-            Text = "⚔", TextColor3 = Color3.new(1,1,1), TextSize = isTouch() and 24 or 18,
-            Font = Enum.Font.GothamBold, Visible = false, ZIndex = 10,
-        }, self.screenGui)
-        self:_create("UICorner", { CornerRadius = UDim.new(1, 0) }, floatingBtn)
-        floatingBtn.MouseButton1Click:Connect(function()
-            main.Visible = true; floatingBtn.Visible = false end)
-        State.ui.floatingBtn = floatingBtn
-        State.ui.mainWindow = main
-
-        local tw, th = isTouch() and 160 or 110, isTouch() and 26 or 20
-        local threat = self:_create("Frame", {
-            Name = "ThreatIndicator", Size = UDim2.new(0, tw, 0, th),
-            Position = UDim2.new(0.5, -tw/2, 0, 8), BackgroundColor3 = Color3.fromRGB(255, 40, 40),
-            BorderSizePixel = 0, Visible = false, ZIndex = 100,
-        }, self.screenGui)
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, threat)
-        self:_create("TextLabel", {
-            Size = UDim2.new(1,0,1,0), BackgroundTransparency = 1, Text = "⚠ THREAT DETECTED",
-            TextColor3 = Color3.new(1,1,1), TextSize = isTouch() and 12 or 10, Font = Enum.Font.GothamBold,
-        }, threat)
-        State.ui.threatIndicator = threat
-
-        local sw, sh = isTouch() and 250 or 210, isTouch() and 20 or 18
-        local stats = self:_create("Frame", {
-            Name = "Stats", Size = UDim2.new(0, sw, 0, sh), Position = UDim2.new(1, -(sw + 8), 1, -(sh + 8)),
-            BackgroundColor3 = COLORS.panel, BackgroundTransparency = 0.35, BorderSizePixel = 0, ZIndex = 5,
-        }, self.screenGui)
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 5) }, stats)
-        State.ui.statsLabel = self:_create("TextLabel", {
-            Size = UDim2.new(1,0,1,0), BackgroundTransparency = 1, Text = "FPS: -- | Ping: -- | AP: OFF",
-            TextColor3 = COLORS.textDim, TextSize = isTouch() and 10 or 9, Font = Enum.Font.Gotham,
-        }, stats)
-
-        State.ui.manualSpamBtn = ManualSpam.new()
-        State.ui.manualSpamBtn:create(self.screenGui, isTouch())
-        return self
-    end
-
-    function UICore:startStatsLoop()
-        local frames, lastTime = 0, tick()
-        track(RunService.RenderStepped:Connect(function()
-            frames = frames + 1
-            local now = tick()
-            if now - lastTime >= 1 then State.fps = frames; frames = 0; lastTime = now end
-        end))
-        task.spawn(function()
-            while task.wait(0.5) do
-                pcall(function()
-                    local ping = 0
-                    if LocalPlayer.GetNetworkPing then ping = LocalPlayer:GetNetworkPing() * 1000 end
-                    State.ping = ping
-                    if State.ui.statsLabel then
-                        State.ui.statsLabel.Text = string.format(
-                            "FPS: %d | Ping: %.0fms | AP: %s | MS: %s",
-                            State.fps, State.ping,
-                            config:get("autoParryEnabled")  and "ON" or "OFF",
-                            config:get("manualSpamEnabled") and "ON" or "OFF")
-                    end
-                end)
-            end
-        end)
-    end
-
-    local ui = UICore.new()
-
-    -- ═══════════════ KEYBINDS ═══════════════
-    track(UserInputService.InputBegan:Connect(function(input, gp)
-        if gp then return end
-        local key = input.KeyCode.Name
-        local function match(cfgKey)
-            local b = config:get(cfgKey)
-            return type(b) == "string" and key:lower() == b:lower()
-        end
-        if match("keybindMenu") then
-            if State.ui.mainWindow then
-                State.ui.mainWindow.Visible = not State.ui.mainWindow.Visible
-                if State.ui.floatingBtn then State.ui.floatingBtn.Visible = not State.ui.mainWindow.Visible end
-            end
-        elseif match("keybindAutoParry") then
-            local s = not config:get("autoParryEnabled"); config:set("autoParryEnabled", s)
-            ui:notify("Auto Parry", s and "Ativado" or "Desativado", 2)
-        elseif match("keybindManualSpam") then
-            local s = not config:get("manualSpamEnabled"); config:set("manualSpamEnabled", s)
-            if State.ui.manualSpamBtn then State.ui.manualSpamBtn:setVisible(s) end
-            ui:notify("Manual Spam", s and "Ativado" or "Desativado", 2)
-        elseif match("keybindESP") then
-            local s = not config:get("ballESP")
-            config:set("ballESP", s); config:set("ballHighlight", s)
-            ui:notify("ESP", s and "Ativado" or "Desativado", 2)
-        elseif match("keybindLegitMode") then
-            local s = not config:get("legitMode"); config:set("legitMode", s)
-            ui:notify("Legit Mode", s and "Ativado" or "Desativado", 2)
-        end
-    end))
-
-    -- ═══════════════ CHARACTER ═══════════════
-    local function bindChar(char)
-        local hrp = char:WaitForChild("HumanoidRootPart", 10)
-        if hrp then State.localHRP = hrp end
-    end
-    if LocalPlayer.Character then bindChar(LocalPlayer.Character) end
-    track(LocalPlayer.CharacterAdded:Connect(bindChar))
-    track(LocalPlayer.CharacterRemoving:Connect(function() State.localHRP = nil end))
-
-    -- ═══════════════ INICIALIZAÇÃO ═══════════════
-    config:load()
-    ui:build()
-    ui:startStatsLoop()
-    ballTracker:start()
-    visuals:start()
-    track(RunService.PreSimulation:Connect(function()
-        pcall(function() parryEngine:update() end)
-    end))
-
-    task.wait(0.5)
-    ui:notify("Blade Ball Suite", "Pronto! Pressione RightShift para abrir.", 4)
-    print("[BB] Script inicializado com sucesso.")
-end
-
-local ok, err = xpcall(MAIN, function(e)
-    return tostring(e) .. "\n" .. debug.traceback("", 2)
-end)
-if not ok then
-    warn("[BB] ERRO FATAL:\n" .. tostring(err))
-    print("[BB] ERRO FATAL:\n" .. tostring(err))
-end
+            TextSize = D.labelFont, Font = Enum.Font.Gotham, TextXAlignment = Enum
