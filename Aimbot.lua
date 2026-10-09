@@ -1,8 +1,7 @@
 --!strict
 -- ============================================================
--- SYSTEM CORE — UI + Aimbot + ESP
--- Tudo em um único LocalScript.
--- Coloque em: StarterPlayer > StarterPlayerScripts > SystemCore (LocalScript)
+-- SYSTEM CORE — UI + Aimbot + ESP  (Painel 400x260)
+-- Local: StarterPlayer > StarterPlayerScripts > SystemCore (LocalScript)
 -- ============================================================
 
 local Players           = game:GetService("Players")
@@ -15,17 +14,17 @@ local player = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
 
 -- ============================================================
--- 1. CONFIGURAÇÕES (edite livremente)
+-- 1. CONFIGURAÇÕES
 -- ============================================================
 local CONFIG = {
 	Aimbot = {
-		Enabled       = false,
-		FOV           = 120,
-		MaxDistance   = 500,
-		TargetPart    = "Head",         -- "Head" | "UpperTorso" | "HumanoidRootPart"
-		Smoothness    = 0.35,           -- 0 = travado, 1 = muito lento
-		UseLineOfSight= true,
-		TeamCheck     = true,
+		Enabled        = false,
+		FOV            = 120,
+		MaxDistance    = 500,
+		TargetPart     = "Head",     -- "Head" | "UpperTorso" | "HumanoidRootPart"
+		Smoothness     = 0.35,       -- 0 = travado, 1 = muito lento
+		UseLineOfSight = true,
+		TeamCheck      = true,
 	},
 	ESP = {
 		Enabled       = false,
@@ -124,11 +123,11 @@ local toggleBtn = new("TextButton", {
 addCorner(toggleBtn, 25)
 addStroke(toggleBtn, CONFIG.Theme.Accent, 2, 0)
 
--- Painel principal
+-- Painel principal (400x260)
 local panel = new("Frame", {
 	Name = "Panel",
-	Size = UDim2.fromOffset(360, 500),
-	Position = UDim2.new(0.5, -180, 0.5, -250),
+	Size = UDim2.fromOffset(400, 260),
+	Position = UDim2.new(0.5, -200, 0.5, -130),
 	BackgroundColor3 = CONFIG.Theme.Background,
 	BorderSizePixel = 0,
 	Visible = false,
@@ -138,10 +137,10 @@ local panel = new("Frame", {
 addCorner(panel, 12)
 addStroke(panel)
 
--- Header (área de arraste)
+-- Header compacto (36px)
 local header = new("Frame", {
 	Name = "Header",
-	Size = UDim2.new(1, 0, 0, 44),
+	Size = UDim2.new(1, 0, 0, 36),
 	BackgroundColor3 = CONFIG.Theme.Panel,
 	BorderSizePixel = 0,
 	Parent = panel,
@@ -157,34 +156,34 @@ new("Frame", {
 
 new("TextLabel", {
 	Size = UDim2.new(1, -60, 1, 0),
-	Position = UDim2.new(0, 16, 0, 0),
+	Position = UDim2.new(0, 14, 0, 0),
 	BackgroundTransparency = 1,
 	Font = Enum.Font.GothamBold,
 	Text = "PAINEL DE CONTROLE",
 	TextColor3 = CONFIG.Theme.Text,
-	TextSize = 14,
+	TextSize = 13,
 	TextXAlignment = Enum.TextXAlignment.Left,
 	Parent = header,
 })
 
 local closeBtn = new("TextButton", {
 	AnchorPoint = Vector2.new(1, 0.5),
-	Position = UDim2.new(1, -12, 0.5, 0),
-	Size = UDim2.fromOffset(28, 28),
+	Position = UDim2.new(1, -10, 0.5, 0),
+	Size = UDim2.fromOffset(24, 24),
 	BackgroundColor3 = CONFIG.Theme.Danger,
 	Text = "✕",
 	TextColor3 = Color3.new(1, 1, 1),
 	Font = Enum.Font.GothamBold,
-	TextSize = 14,
+	TextSize = 12,
 	AutoButtonColor = false,
 	Parent = header,
 })
-addCorner(closeBtn, 14)
+addCorner(closeBtn, 12)
 
--- Abas
+-- Barra de abas
 local tabBar = new("Frame", {
-	Position = UDim2.new(0, 12, 0, 56),
-	Size = UDim2.new(1, -24, 0, 30),
+	Position = UDim2.new(0, 10, 0, 44),
+	Size = UDim2.new(1, -20, 0, 26),
 	BackgroundTransparency = 1,
 	Parent = panel,
 })
@@ -194,9 +193,10 @@ new("UIListLayout", {
 	Parent = tabBar,
 })
 
+-- Área de conteúdo (rolável)
 local content = new("Frame", {
-	Position = UDim2.new(0, 12, 0, 96),
-	Size = UDim2.new(1, -24, 1, -108),
+	Position = UDim2.new(0, 10, 0, 76),
+	Size = UDim2.new(1, -20, 1, -84),
 	BackgroundTransparency = 1,
 	Parent = panel,
 })
@@ -222,7 +222,7 @@ local function addTab(name)
 		Font = Enum.Font.GothamMedium,
 		Text = name,
 		TextColor3 = CONFIG.Theme.Text,
-		TextSize = 13,
+		TextSize = 12,
 		AutoButtonColor = false,
 		Parent = tabBar,
 	})
@@ -255,7 +255,7 @@ end
 -- ============================================================
 local function createToggle(parent, labelText, getValue, setValue)
 	local row = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 32),
+		Size = UDim2.new(1, 0, 0, 26),
 		BackgroundTransparency = 1,
 		Parent = parent,
 	})
@@ -265,7 +265,7 @@ local function createToggle(parent, labelText, getValue, setValue)
 		Font = Enum.Font.Gotham,
 		Text = labelText,
 		TextColor3 = CONFIG.Theme.Text,
-		TextSize = 14,
+		TextSize = 13,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Parent = row,
 	})
@@ -273,21 +273,21 @@ local function createToggle(parent, labelText, getValue, setValue)
 	local btn = new("TextButton", {
 		AnchorPoint = Vector2.new(1, 0.5),
 		Position = UDim2.new(1, 0, 0.5, 0),
-		Size = UDim2.fromOffset(44, 22),
+		Size = UDim2.fromOffset(40, 20),
 		BackgroundColor3 = getValue() and CONFIG.Theme.ToggleOn or CONFIG.Theme.ToggleOff,
 		Text = "",
 		AutoButtonColor = false,
 		Parent = row,
 	})
-	addCorner(btn, 11)
+	addCorner(btn, 10)
 
 	local knob = new("Frame", {
-		Size = UDim2.fromOffset(18, 18),
-		Position = getValue() and UDim2.new(1, -20, 0, 2) or UDim2.new(0, 2, 0, 2),
+		Size = UDim2.fromOffset(16, 16),
+		Position = getValue() and UDim2.new(1, -18, 0, 2) or UDim2.new(0, 2, 0, 2),
 		BackgroundColor3 = Color3.new(1, 1, 1),
 		Parent = btn,
 	})
-	addCorner(knob, 9)
+	addCorner(knob, 8)
 
 	btn.MouseButton1Click:Connect(function()
 		local newVal = not getValue()
@@ -296,42 +296,42 @@ local function createToggle(parent, labelText, getValue, setValue)
 			BackgroundColor3 = newVal and CONFIG.Theme.ToggleOn or CONFIG.Theme.ToggleOff,
 		}):Play()
 		TweenService:Create(knob, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
-			Position = newVal and UDim2.new(1, -20, 0, 2) or UDim2.new(0, 2, 0, 2),
+			Position = newVal and UDim2.new(1, -18, 0, 2) or UDim2.new(0, 2, 0, 2),
 		}):Play()
 	end)
 end
 
 local function createSlider(parent, labelText, min, max, getValue, setValue, onChange)
 	local row = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 46),
+		Size = UDim2.new(1, 0, 0, 38),
 		BackgroundTransparency = 1,
 		Parent = parent,
 	})
 	new("TextLabel", {
-		Size = UDim2.new(1, -60, 0, 20),
+		Size = UDim2.new(1, -60, 0, 16),
 		BackgroundTransparency = 1,
 		Font = Enum.Font.Gotham,
 		Text = labelText,
 		TextColor3 = CONFIG.Theme.Text,
-		TextSize = 14,
+		TextSize = 13,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Parent = row,
 	})
 
 	local valLabel = new("TextLabel", {
-		Size = UDim2.new(0, 60, 0, 20),
+		Size = UDim2.new(0, 60, 0, 16),
 		Position = UDim2.new(1, -60, 0, 0),
 		BackgroundTransparency = 1,
 		Font = Enum.Font.GothamMedium,
 		Text = string.format("%.0f", getValue()),
 		TextColor3 = CONFIG.Theme.Accent,
-		TextSize = 14,
+		TextSize = 13,
 		TextXAlignment = Enum.TextXAlignment.Right,
 		Parent = row,
 	})
 
 	local bar = new("Frame", {
-		Position = UDim2.new(0, 0, 0, 26),
+		Position = UDim2.new(0, 0, 0, 22),
 		Size = UDim2.new(1, 0, 0, 6),
 		BackgroundColor3 = CONFIG.Theme.ToggleOff,
 		BorderSizePixel = 0,
@@ -380,7 +380,7 @@ end
 
 local function createDropdown(parent, labelText, options, getValue, setValue)
 	local row = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 32),
+		Size = UDim2.new(1, 0, 0, 28),
 		BackgroundTransparency = 1,
 		Parent = parent,
 	})
@@ -390,7 +390,7 @@ local function createDropdown(parent, labelText, options, getValue, setValue)
 		Font = Enum.Font.Gotham,
 		Text = labelText,
 		TextColor3 = CONFIG.Theme.Text,
-		TextSize = 14,
+		TextSize = 13,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Parent = row,
 	})
@@ -398,12 +398,12 @@ local function createDropdown(parent, labelText, options, getValue, setValue)
 	local current = new("TextButton", {
 		AnchorPoint = Vector2.new(1, 0),
 		Position = UDim2.new(1, 0, 0, 0),
-		Size = UDim2.fromOffset(140, 32),
+		Size = UDim2.fromOffset(140, 28),
 		BackgroundColor3 = CONFIG.Theme.Panel,
 		Font = Enum.Font.Gotham,
 		Text = getValue(),
 		TextColor3 = CONFIG.Theme.Text,
-		TextSize = 13,
+		TextSize = 12,
 		AutoButtonColor = false,
 		Parent = row,
 	})
@@ -411,7 +411,7 @@ local function createDropdown(parent, labelText, options, getValue, setValue)
 	addStroke(current)
 
 	local list = new("Frame", {
-		Position = UDim2.new(1, 0, 0, 34),
+		Position = UDim2.new(1, 0, 0, 30),
 		AnchorPoint = Vector2.new(1, 0),
 		Size = UDim2.fromOffset(140, 0),
 		BackgroundColor3 = CONFIG.Theme.Panel,
@@ -429,7 +429,7 @@ local function createDropdown(parent, labelText, options, getValue, setValue)
 		if opened then
 			list.Visible = true
 			TweenService:Create(list, TweenInfo.new(0.18), {
-				Size = UDim2.fromOffset(140, #options * 28),
+				Size = UDim2.fromOffset(140, #options * 26),
 			}):Play()
 		else
 			local t = TweenService:Create(list, TweenInfo.new(0.18), {
@@ -443,12 +443,12 @@ local function createDropdown(parent, labelText, options, getValue, setValue)
 	new("UIListLayout", { Parent = list, SortOrder = Enum.SortOrder.LayoutOrder })
 	for _, opt in ipairs(options) do
 		local optBtn = new("TextButton", {
-			Size = UDim2.new(1, 0, 0, 28),
+			Size = UDim2.new(1, 0, 0, 26),
 			BackgroundTransparency = 1,
 			Font = Enum.Font.Gotham,
 			Text = opt,
 			TextColor3 = CONFIG.Theme.Text,
-			TextSize = 13,
+			TextSize = 12,
 			Parent = list,
 		})
 		optBtn.MouseEnter:Connect(function() optBtn.BackgroundTransparency = 0.8 end)
@@ -562,7 +562,7 @@ do
 end
 
 -- ============================================================
--- 7. ABRIR / FECHAR PAINEL
+-- 7. ABRIR / FECHAR PAINEL (400x260)
 -- ============================================================
 do
 	local isOpen = false
@@ -570,13 +570,13 @@ do
 		isOpen = state
 		if isOpen then
 			panel.Visible = true
-			panel.Size = UDim2.fromOffset(360, 0)
+			panel.Size = UDim2.fromOffset(400, 0)
 			TweenService:Create(panel,
 				TweenInfo.new(0.28, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-				{ Size = UDim2.fromOffset(360, 500) }):Play()
+				{ Size = UDim2.fromOffset(400, 260) }):Play()
 		else
 			local t = TweenService:Create(panel, TweenInfo.new(0.2),
-				{ Size = UDim2.fromOffset(360, 0) })
+				{ Size = UDim2.fromOffset(400, 0) })
 			t:Play()
 			t.Completed:Connect(function() panel.Visible = false end)
 		end
@@ -684,7 +684,7 @@ aimbotConn = RunService.RenderStepped:Connect(aimbotStep)
 -- ============================================================
 -- 9. ESP
 -- ============================================================
-local espCache = {}  -- [player] = { billboard, box, highlight, connection }
+local espCache = {}
 
 local function clearESP(plr)
 	local data = espCache[plr]
@@ -702,7 +702,6 @@ local function buildESP(plr)
 	if not char or not char:FindFirstChild("HumanoidRootPart") then return end
 	if plr == player then return end
 
-	-- Highlight
 	local highlight
 	if CONFIG.ESP.UseHighlight then
 		highlight = new("Highlight", {
@@ -715,10 +714,9 @@ local function buildESP(plr)
 		})
 	end
 
-	-- Billboard (nome + distância)
 	local billboard = new("BillboardGui", {
 		Name = "ESP_Billboard",
-		Adornee = char.Head or char:FindFirstChild("HumanoidRootPart"),
+		Adornee = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart"),
 		Size = UDim2.fromOffset(180, 44),
 		StudsOffset = Vector3.new(0, 2.5, 0),
 		AlwaysOnTop = true,
@@ -752,7 +750,6 @@ local function buildESP(plr)
 		Parent = billboard,
 	})
 
-	-- Box ESP (Frame em 2D reativo à câmera)
 	local box
 	if CONFIG.ESP.ShowBox then
 		box = new("Frame", {
@@ -765,7 +762,6 @@ local function buildESP(plr)
 		addStroke(box, CONFIG.ESP.Color, 1.5, 0)
 	end
 
-	-- Conexão por personagem
 	local conn = RunService.RenderStepped:Connect(function()
 		local c = plr.Character
 		if not c or not c:FindFirstChild("HumanoidRootPart") then
@@ -776,7 +772,6 @@ local function buildESP(plr)
 		local myPos = camera.CFrame.Position
 		local dist = (root.Position - myPos).Magnitude
 
-		-- Atualiza billboard
 		if billboard.Parent then
 			billboard.Adornee = c:FindFirstChild("Head") or root
 			nameLabel.Text = plr.DisplayName
@@ -790,13 +785,11 @@ local function buildESP(plr)
 			distLabel.Visible = CONFIG.ESP.ShowDistance
 		end
 
-		-- Atualiza Highlight
 		if highlight then
 			highlight.FillColor = CONFIG.ESP.Color
 			highlight.OutlineColor = CONFIG.ESP.Color
 		end
 
-		-- Atualiza Box 2D
 		if box then
 			if not CONFIG.ESP.ShowBox then
 				box.Visible = false
@@ -832,7 +825,7 @@ local function buildESP(plr)
 	}
 end
 
--- Gerenciar entrada/saída de personagens
+-- Gerenciar entrada/saída de jogadores
 local function onPlayerAdded(plr)
 	plr.CharacterAdded:Connect(function()
 		if CONFIG.ESP.Enabled then
@@ -852,15 +845,13 @@ end
 Players.PlayerAdded:Connect(onPlayerAdded)
 Players.PlayerRemoving:Connect(function(plr) clearESP(plr) end)
 
--- Controla liga/desliga global do ESP sem recriar tudo
+-- Loop leve para ligar/desligar ESP globalmente
 RunService.Heartbeat:Connect(function()
-	-- Se desligar globalmente, remove tudo
 	if not CONFIG.ESP.Enabled then
 		for plr in pairs(espCache) do
 			clearESP(plr)
 		end
 	else
-		-- Se ligar e algum player não tiver ESP, cria
 		for _, plr in ipairs(Players:GetPlayers()) do
 			if plr ~= player and plr.Character and not espCache[plr] then
 				buildESP(plr)
@@ -879,4 +870,4 @@ Players.LocalPlayer.AncestryChanged:Connect(function()
 	end
 end)
 
-print("[SystemCore] Carregado com sucesso. Pressione ⚙ para abrir o painel.")
+print("[SystemCore] Carregado. Clique no ⚙ para abrir o painel (400x260).")
