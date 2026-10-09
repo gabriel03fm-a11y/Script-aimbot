@@ -1,8 +1,7 @@
 --[[
 ====================================================================
-   SISTEMA COMPLETO — AIMBOT + ESP + UI MODERNA (SCRIPT ÚNICO)
+   AIMBOT HERICX — SISTEMA COMPLETO (SCRIPT ÚNICO)
    Local: StarterPlayer > StarterPlayerScripts (LocalScript)
-   Autor: (personalize)
    Compatível com PC e Celular (UI responsiva)
 ====================================================================
 ]]
@@ -39,7 +38,7 @@ local Config = {
 	},
 }
 
---==================== TEMA (fácil de personalizar) ====================
+--==================== TEMA ====================
 local Theme = {
 	Background = Color3.fromRGB(16, 16, 20),
 	Panel      = Color3.fromRGB(24, 24, 30),
@@ -70,7 +69,7 @@ end
 
 --==================== SCREEN GUI ====================
 local screenGui = new("ScreenGui", {
-	Name = "ModernSystemUI",
+	Name = "AimbotHericxUI",
 	ResetOnSpawn = false,
 	IgnoreGuiInset = true,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
@@ -100,14 +99,14 @@ local function refreshFOVCircle()
 end
 refreshFOVCircle()
 
---==================== BOTÃO FLUTUANTE (abrir/fechar) ====================
+--==================== BOTÃO FLUTUANTE ====================
 local toggleBtn = new("TextButton", {
 	Name = "ToggleButton",
 	Size = UDim2.fromOffset(52, 52),
 	Position = UDim2.new(0, 18, 0.35, 0),
 	BackgroundColor3 = Theme.Accent,
-	Text = "☰",
-	TextSize = 24,
+	Text = "H",
+	TextSize = 26,
 	Font = Enum.Font.GothamBold,
 	TextColor3 = Color3.new(1, 1, 1),
 	AutoButtonColor = false,
@@ -117,7 +116,7 @@ local toggleBtn = new("TextButton", {
 new("UICorner", { CornerRadius = UDim.new(1, 0) }, toggleBtn)
 new("UIStroke", { Thickness = 1, Color = Color3.new(1, 1, 1), Transparency = 0.7 }, toggleBtn)
 
---==================== PAINEL PRINCIPAL (CanvasGroup p/ fade) ====================
+--==================== PAINEL PRINCIPAL ====================
 local panel = new("CanvasGroup", {
 	Name = "MainPanel",
 	AnchorPoint = Vector2.new(0.5, 0.5),
@@ -151,7 +150,7 @@ local header = new("Frame", {
 }, panel)
 new("UICorner", { CornerRadius = UDim.new(0, 12) }, header)
 
--- Corrige o canto inferior do header (fica quadrado para colar nas abas)
+-- Corrige o canto inferior do header
 new("Frame", {
 	Size = UDim2.new(1, 0, 0, 12),
 	Position = UDim2.new(0, 0, 1, -12),
@@ -159,16 +158,24 @@ new("Frame", {
 	BorderSizePixel = 0,
 }, header)
 
-new("TextLabel", {
+-- TÍTULO COM DEGRADÊ "AIMBOT HERICX"
+local title = new("TextLabel", {
 	Size = UDim2.new(1, -50, 1, 0),
 	Position = UDim2.new(0, 14, 0, 0),
 	BackgroundTransparency = 1,
-	Text = "PAINEL DE CONTROLE",
-	TextColor3 = Theme.Text,
+	Text = "AIMBOT HERICX",
+	TextColor3 = Color3.new(1, 1, 1),
 	Font = Enum.Font.GothamBold,
-	TextSize = 14,
+	TextSize = 15,
 	TextXAlignment = Enum.TextXAlignment.Left,
 }, header)
+
+local titleGrad = Instance.new("UIGradient")
+titleGrad.Color = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 220, 255)),
+	ColorSequenceKeypoint.new(1, Color3.fromRGB(180, 80, 255)),
+})
+titleGrad.Parent = title
 
 local closeBtn = new("TextButton", {
 	Size = UDim2.fromOffset(28, 28),
@@ -552,10 +559,10 @@ do
 		Size = UDim2.new(0.45, -12, 1, 0),
 		Position = UDim2.new(0.55, 0, 0, 0),
 		BackgroundTransparency = 1,
-		Text = "Arraste o painel pelo topo",
+		Text = "by Hericx",
 		TextColor3 = Theme.SubText,
-		Font = Enum.Font.Gotham,
-		TextSize = 11,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
 		TextWrapped = true,
 		TextXAlignment = Enum.TextXAlignment.Right,
 	}, r4)
@@ -595,7 +602,7 @@ end
 
 closeBtn.MouseButton1Click:Connect(closePanel)
 
---==================== DRAG (painel + botão) ====================
+--==================== DRAG ====================
 local function makeDraggable(target, handle, onRelease)
 	local dragging, dragStart, startPos, moved = false, nil, nil, false
 	handle.InputBegan:Connect(function(input)
@@ -645,7 +652,6 @@ rayParams.FilterType = Enum.RaycastFilterType.Exclude
 local function getTargetPart(char)
 	local part = char:FindFirstChild(Config.Aimbot.TargetPart)
 	if part then return part end
-	-- fallback caso R15/R6 diferentes
 	return char:FindFirstChild("UpperTorso")
 		or char:FindFirstChild("Torso")
 		or char:FindFirstChild("Head")
@@ -693,7 +699,6 @@ local function findBestTarget()
 	return bestPart
 end
 
--- Render step com prioridade acima da câmera padrão
 local function aimbotUpdate(dt)
 	if not Config.Aimbot.Enabled then return end
 
@@ -703,7 +708,6 @@ local function aimbotUpdate(dt)
 	local camPos = Camera.CFrame.Position
 	local desired = CFrame.lookAt(camPos, target.Position)
 
-	-- Suavização frame-independent
 	local alpha = math.clamp(Config.Aimbot.Smoothness * dt * 60, 0, 1)
 	Camera.CFrame = Camera.CFrame:Lerp(desired, alpha)
 end
@@ -711,7 +715,7 @@ end
 RunService:BindToRenderStep("SystemAimbot", Enum.RenderPriority.Camera.Value + 1, aimbotUpdate)
 
 --==================== MÓDULO ESP ====================
-local espCache = {}  -- [Player] = { char, highlight, billboard, nameLabel, distLabel, box }
+local espCache = {}
 
 function clearESPFor(player)
 	local data = espCache[player]
@@ -730,7 +734,6 @@ function buildESPFor(player)
 	local head = char:FindFirstChild("Head")
 	if not head then return end
 
-	-- Highlight
 	local highlight = new("Highlight", {
 		Name = "ESP_Highlight",
 		FillColor = Config.ESP.Color,
@@ -740,7 +743,6 @@ function buildESPFor(player)
 		DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
 	}, char)
 
-	-- BillboardGui (nome + distância)
 	local billboard = new("BillboardGui", {
 		Name = "ESP_Billboard",
 		Size = UDim2.fromOffset(220, 46),
@@ -773,7 +775,6 @@ function buildESPFor(player)
 		TextStrokeColor3 = Color3.new(0, 0, 0),
 	}, billboard)
 
-	-- Box (Frame com UIStroke)
 	local box = new("Frame", {
 		Name = "ESP_Box",
 		BackgroundTransparency = 1,
@@ -798,7 +799,6 @@ function buildESPFor(player)
 	}
 end
 
---========== Atualização do ESP (RenderStepped) ==========
 local lastCacheRefresh = 0
 
 local function updateESP()
@@ -806,7 +806,6 @@ local function updateESP()
 
 	local now = tick()
 
-	-- Recria cache a cada 0.5s (jogadores entrando/saindo, respawn)
 	if now - lastCacheRefresh > 0.5 then
 		lastCacheRefresh = now
 		for _, p in ipairs(Players:GetPlayers()) do
@@ -825,7 +824,7 @@ local function updateESP()
 	if textUpdate then espCache._lastText = now end
 
 	for player, data in pairs(espCache) do
-		if type(player) ~= "Instance" then continue end  -- ignora chaves auxiliares
+		if type(player) ~= "Instance" then continue end
 
 		local char = player.Character
 		local hrp  = char and char:FindFirstChild("HumanoidRootPart")
@@ -834,7 +833,6 @@ local function updateESP()
 
 		local valid = hrp and head and hum and hum.Health > 0
 
-		-- Highlight
 		if data.highlight then
 			data.highlight.Enabled = valid and Config.ESP.Highlight
 			data.highlight.FillColor = Config.ESP.Color
@@ -847,7 +845,6 @@ local function updateESP()
 			continue
 		end
 
-		-- Billboard (nome / distância)
 		data.billboard.Enabled = Config.ESP.ShowName or Config.ESP.ShowDistance
 		data.nameLabel.Visible = Config.ESP.ShowName
 		data.distLabel.Visible = Config.ESP.ShowDistance
@@ -864,7 +861,6 @@ local function updateESP()
 			end
 		end
 
-		-- Box ESP
 		if Config.ESP.Box then
 			local topWorld = head.Position + Vector3.new(0, head.Size.Y * 0.5 + 0.6, 0)
 			local botWorld = hrp.Position - Vector3.new(0, hrp.Size.Y * 0.5 + 2.5, 0)
@@ -889,7 +885,7 @@ end
 
 RunService.RenderStepped:Connect(updateESP)
 
---==================== CICLO DE VIDA DE JOGADORES ====================
+--==================== CICLO DE VIDA ====================
 Players.PlayerRemoving:Connect(function(player)
 	clearESPFor(player)
 end)
@@ -897,19 +893,18 @@ end)
 Players.PlayerAdded:Connect(function(player)
 	if player == LocalPlayer then return end
 	player.CharacterAdded:Connect(function()
-		task.wait(0.35)  -- aguarda o personagem montar
+		task.wait(0.35)
 		if Config.ESP.Enabled then
 			buildESPFor(player)
 		end
 	end)
 end)
 
--- Ao morrer/respawnar, limpamos o cache do LocalPlayer (não faz nada, mas garante)
 LocalPlayer.CharacterAdded:Connect(function()
 	-- nada a fazer além de deixar o loop recriar depois
 end)
 
---==================== LIMPEZA (caso o script seja destruído) ====================
+--==================== LIMPEZA ====================
 screenGui.Destroying:Connect(function()
 	pcall(function()
 		RunService:UnbindFromRenderStep("SystemAimbot")
@@ -919,4 +914,4 @@ screenGui.Destroying:Connect(function()
 	end
 end)
 
-print("[Sistema] Carregado com sucesso. Toque no botão ☰ para abrir o painel.")
+print("[AIMBOT HERICX] Carregado com sucesso. Toque no botão H para abrir o painel.")
