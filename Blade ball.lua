@@ -16,7 +16,7 @@ local function MAIN()
     local LocalPlayer = Players.LocalPlayer
     if not LocalPlayer then error("LocalPlayer indisponível") end
 
-    -- REG via _G puro (sem getgenv vivo nas closures depois do boot)
+    -- [MOD 1] REG via _G puro (sem getgenv vivo nas closures depois do boot)
     local REG = rawget(_G, "__BB_SUITE_REG__")
     if not REG then
         REG = (getgenv and getgenv()) or _G
@@ -106,7 +106,7 @@ local function MAIN()
     }
     local _savedGlobals
 
-    -- cleanClick: chunk anônimo, env vazio, DataModel por upvalue (sem 'game')
+    -- [MOD 2] cleanClick: chunk anônimo, env vazio, DataModel por upvalue (sem 'game')
     function AntiDetect.buildCleanClick()
         local src = [[local DataModel = ... ; return function(x, y, down)
             DataModel:GetService("VirtualInputManager"):SendMouseButtonEvent(x, y, 0, down, DataModel, 0)
@@ -124,7 +124,7 @@ local function MAIN()
         end
     end
 
-    -- varre TODOS os frames (igual o BAC) e esconde as globais
+    -- [MOD 3] varre TODOS os frames (igual o BAC) e esconde as globais
     function AntiDetect.hideGlobals()
         if not config:get("hideGlobals") then return end
         _savedGlobals = {}
@@ -178,7 +178,4 @@ local function MAIN()
     local BallTracker = {}
     BallTracker.__index = BallTracker
     function BallTracker.new() return setmetatable({}, BallTracker) end
-    function BallTracker:getActiveBall()
-        local f = workspace:FindFirstChild("Balls")
-        if not f then return nil end
-        for
+   
