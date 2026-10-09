@@ -1,5 +1,5 @@
 --[[
-    BLADE BALL SUITE — v1.1.0 (responsivo + full script)
+    BLADE BALL SUITE — v1.1.1 (responsivo + full script + UI compacta)
     Script único, auto-contido, com trap de erro no topo.
 --]]
 
@@ -244,7 +244,8 @@ local function MAIN()
         return setmetatable({ _frame=nil, _label=nil, _mode="AP" }, ManualSpam)
     end
     function ManualSpam:create(parent, isTouch)
-        local w, h = isTouch and 90 or 60, isTouch and 46 or 30
+        -- [UI MENOR] botão AP/TB reduzido
+        local w, h = isTouch and 74 or 50, isTouch and 38 or 24
         local frame = Instance.new("Frame")
         frame.Name = "ManualSpamButton"
         frame.Size = UDim2.new(0, w, 0, h)
@@ -256,9 +257,9 @@ local function MAIN()
         frame.Parent = parent
 
         local corner = Instance.new("UICorner")
-        corner.CornerRadius = UDim.new(0, 10); corner.Parent = frame
+        corner.CornerRadius = UDim.new(0, 8); corner.Parent = frame
         local stroke = Instance.new("UIStroke")
-        stroke.Color = Color3.fromRGB(255, 180, 50); stroke.Thickness = 1.5; stroke.Parent = frame
+        stroke.Color = Color3.fromRGB(255, 180, 50); stroke.Thickness = 1.2; stroke.Parent = frame
 
         local label = Instance.new("TextLabel")
         label.Size = UDim2.new(1, 0, 1, 0)
@@ -477,21 +478,22 @@ local function MAIN()
         border=Color3.fromRGB(50,50,65),
     }
 
+    -- [UI MENOR] dimensões reduzidas
     local DIMS_DESKTOP = {
-        windowW=560, windowH=470, titleBarH=40, tabBarH=42,
-        tabBtnW=96, tabBtnH=28, rowToggleH=38,
-        toggleTrackW=46, toggleTrackH=22, toggleKnob=18,
-        sliderH=58, sliderTrackH=6, sliderDragH=22, inputH=42,
-        btnRowH=34, scrollThickness=5,
-        titleFont=15, labelFont=14, btnFont=13, pad=14,
+        windowW=420, windowH=350, titleBarH=30, tabBarH=32,
+        tabBtnW=74, tabBtnH=22, rowToggleH=28,
+        toggleTrackW=36, toggleTrackH=17, toggleKnob=13,
+        sliderH=44, sliderTrackH=5, sliderDragH=16, inputH=32,
+        btnRowH=26, scrollThickness=4,
+        titleFont=12, labelFont=11, btnFont=10, pad=10,
     }
     local DIMS_TOUCH = {
-        windowW=560, windowH=470, titleBarH=54, tabBarH=58,
-        tabBtnW=112, tabBtnH=42, rowToggleH=58,
-        toggleTrackW=62, toggleTrackH=32, toggleKnob=28,
-        sliderH=80, sliderTrackH=12, sliderDragH=46, inputH=58,
-        btnRowH=54, scrollThickness=10,
-        titleFont=17, labelFont=16, btnFont=15, pad=16,
+        windowW=440, windowH=380, titleBarH=42, tabBarH=44,
+        tabBtnW=88, tabBtnH=32, rowToggleH=44,
+        toggleTrackW=48, toggleTrackH=25, toggleKnob=21,
+        sliderH=62, sliderTrackH=9, sliderDragH=34, inputH=44,
+        btnRowH=40, scrollThickness=7,
+        titleFont=14, labelFont=13, btnFont=12, pad=12,
     }
     local D = DIMS_DESKTOP
 
@@ -500,14 +502,15 @@ local function MAIN()
         local cam = workspace.CurrentCamera
         return cam and cam.ViewportSize or Vector2.new(1280, 720)
     end
+    -- [UI MENOR] escala máxima limitada
     local function computeUIScale(vp)
         local maxW = vp.X * 0.94
         local maxH = vp.Y * 0.92
         local fit = math.min(maxW / DIMS_DESKTOP.windowW, maxH / DIMS_DESKTOP.windowH)
         if isTouch() then
-            return math.clamp(fit, 1.0, 1.8)
+            return math.clamp(fit, 0.85, 1.35)
         end
-        return math.clamp(fit, 0.75, 1.0)
+        return math.clamp(fit, 0.65, 0.9)
     end
 
     local UICore = {}
@@ -529,7 +532,7 @@ local function MAIN()
             Size = UDim2.new(1, -20, 0, D.rowToggleH),
             BackgroundColor3 = COLORS.panelAlt, BorderSizePixel = 0,
         }, parent)
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 8) }, frame)
+        self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, frame)
         self:_create("TextLabel", {
             Size = UDim2.new(1, -(D.toggleTrackW + 30), 1, 0),
             Position = UDim2.new(0, D.pad, 0, 0),
@@ -584,18 +587,18 @@ local function MAIN()
             Size = UDim2.new(1, -20, 0, D.sliderH),
             BackgroundColor3 = COLORS.panelAlt, BorderSizePixel = 0,
         }, parent)
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 8) }, frame)
+        self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, frame)
         self:_create("TextLabel", {
-            Size = UDim2.new(0.6, 0, 0, 24),
-            Position = UDim2.new(0, D.pad, 0, 8),
+            Size = UDim2.new(0.6, 0, 0, 20),
+            Position = UDim2.new(0, D.pad, 0, 6),
             BackgroundTransparency = 1, Text = labelText,
             TextColor3 = COLORS.text, TextSize = D.labelFont,
             Font = Enum.Font.Gotham,
             TextXAlignment = Enum.TextXAlignment.Left,
         }, frame)
         local valueLabel = self:_create("TextLabel", {
-            Size = UDim2.new(0.35, 0, 0, 24),
-            Position = UDim2.new(0.62, 0, 0, 8),
+            Size = UDim2.new(0.35, 0, 0, 20),
+            Position = UDim2.new(0.62, 0, 0, 6),
             BackgroundTransparency = 1,
             Text = tostring(config:get(configKey)) .. suffix,
             TextColor3 = COLORS.accent, TextSize = D.labelFont,
@@ -604,7 +607,7 @@ local function MAIN()
         }, frame)
         local trackBg = self:_create("Frame", {
             Size = UDim2.new(1, -D.pad*2, 0, D.sliderTrackH),
-            Position = UDim2.new(0, D.pad, 1, -(D.sliderTrackH + 12)),
+            Position = UDim2.new(0, D.pad, 1, -(D.sliderTrackH + 10)),
             BackgroundColor3 = COLORS.border, BorderSizePixel = 0,
         }, frame)
         self:_create("UICorner", { CornerRadius = UDim.new(1, 0) }, trackBg)
@@ -657,7 +660,7 @@ local function MAIN()
             Size = UDim2.new(1, -20, 0, D.inputH),
             BackgroundColor3 = COLORS.panelAlt, BorderSizePixel = 0,
         }, parent)
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 8) }, frame)
+        self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, frame)
         self:_create("TextLabel", {
             Size = UDim2.new(0.55, 0, 1, 0),
             Position = UDim2.new(0, D.pad, 0, 0),
@@ -666,10 +669,10 @@ local function MAIN()
             Font = Enum.Font.Gotham,
             TextXAlignment = Enum.TextXAlignment.Left,
         }, frame)
-        local boxW = isTouch() and 120 or 90
+        local boxW = isTouch() and 96 or 72
         local box = self:_create("TextBox", {
-            Size = UDim2.new(0, boxW, 0, D.inputH - 16),
-            Position = UDim2.new(1, -(boxW + D.pad), 0.5, -(D.inputH - 16)/2),
+            Size = UDim2.new(0, boxW, 0, D.inputH - 12),
+            Position = UDim2.new(1, -(boxW + D.pad), 0.5, -(D.inputH - 12)/2),
             BackgroundColor3 = COLORS.bg,
             Text = tostring(config:get(configKey) or ""),
             TextColor3 = COLORS.accent, TextSize = D.labelFont,
@@ -678,7 +681,7 @@ local function MAIN()
             PlaceholderColor3 = COLORS.textDim,
             ClearTextOnFocus = false,
         }, frame)
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, box)
+        self:_create("UICorner", { CornerRadius = UDim.new(0, 5) }, box)
         box.FocusLost:Connect(function()
             local num = tonumber(box.Text)
             config:set(configKey, num or box.Text)
@@ -692,44 +695,46 @@ local function MAIN()
         duration = duration or 3
         if not self._notifContainer or not self._notifContainer.Parent then
             local touch = isTouch()
+            -- [UI MENOR] container de notificações menor
             self._notifContainer = self:_create("Frame", {
                 Name = "Notifications",
-                Size = touch and UDim2.new(1, -20, 0, 400) or UDim2.new(0, 300, 1, -20),
-                Position = touch and UDim2.new(0, 10, 0, 10) or UDim2.new(1, -310, 0, 10),
+                Size = touch and UDim2.new(1, -20, 0, 320) or UDim2.new(0, 240, 1, -20),
+                Position = touch and UDim2.new(0, 10, 0, 10) or UDim2.new(1, -250, 0, 10),
                 BackgroundTransparency = 1, ZIndex = 500,
             }, self.screenGui)
             self:_create("UIListLayout", {
                 SortOrder = Enum.SortOrder.LayoutOrder,
-                Padding = UDim.new(0, 6),
+                Padding = UDim.new(0, 5),
                 HorizontalAlignment = touch and Enum.HorizontalAlignment.Center
                                     or Enum.HorizontalAlignment.Right,
             }, self._notifContainer)
         end
+        -- [UI MENOR] card de notificação reduzido
         local notif = self:_create("Frame", {
-            Size = UDim2.new(1, 0, 0, 52),
+            Size = UDim2.new(1, 0, 0, 42),
             BackgroundColor3 = COLORS.panel, BorderSizePixel = 0,
         }, self._notifContainer)
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 8) }, notif)
+        self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, notif)
         self:_create("UIStroke", { Color = COLORS.accent, Thickness = 1, Transparency = 0.6 }, notif)
         self:_create("TextLabel", {
-            Size = UDim2.new(1, -24, 0, 22),
-            Position = UDim2.new(0, 14, 0, 6),
+            Size = UDim2.new(1, -20, 0, 18),
+            Position = UDim2.new(0, 12, 0, 4),
             BackgroundTransparency = 1, Text = title,
-            TextColor3 = COLORS.accent, TextSize = D.labelFont,
+            TextColor3 = COLORS.accent, TextSize = math.max(D.labelFont - 1, 10),
             Font = Enum.Font.GothamBold,
             TextXAlignment = Enum.TextXAlignment.Left,
         }, notif)
         self:_create("TextLabel", {
-            Size = UDim2.new(1, -24, 0, 18),
-            Position = UDim2.new(0, 14, 0, 28),
+            Size = UDim2.new(1, -20, 0, 16),
+            Position = UDim2.new(0, 12, 0, 22),
             BackgroundTransparency = 1, Text = text,
-            TextColor3 = COLORS.textDim, TextSize = math.max(D.labelFont - 2, 11),
+            TextColor3 = COLORS.textDim, TextSize = math.max(D.labelFont - 2, 9),
             Font = Enum.Font.Gotham,
             TextXAlignment = Enum.TextXAlignment.Left,
         }, notif)
 
         local touch = isTouch()
-        local startPos = touch and UDim2.new(0, 0, 0, -60) or UDim2.new(1, 50, 0, 0)
+        local startPos = touch and UDim2.new(0, 0, 0, -50) or UDim2.new(1, 40, 0, 0)
         notif.Position = startPos
         TweenService:Create(notif, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
             { Position = UDim2.new(0, 0, 0, 0) }):Play()
@@ -767,7 +772,7 @@ local function MAIN()
             BackgroundColor3 = COLORS.bg, BorderSizePixel = 0, ClipsDescendants = true,
         }, self.screenGui)
         self.mainFrame = main
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 12) }, main)
+        self:_create("UICorner", { CornerRadius = UDim.new(0, 10) }, main)
         self:_create("UIStroke", { Color = COLORS.border, Thickness = 1 }, main)
 
         local uiscl = Instance.new("UIScale")
@@ -789,31 +794,32 @@ local function MAIN()
             Size = UDim2.new(1, 0, 0, D.titleBarH),
             BackgroundColor3 = COLORS.panel, BorderSizePixel = 0,
         }, main)
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 12) }, titleBar)
+        self:_create("UICorner", { CornerRadius = UDim.new(0, 10) }, titleBar)
         self:_create("Frame", {
-            Size = UDim2.new(1, 0, 0, 12),
-            Position = UDim2.new(0, 0, 1, -12),
+            Size = UDim2.new(1, 0, 0, 10),
+            Position = UDim2.new(0, 0, 1, -10),
             BackgroundColor3 = COLORS.panel, BorderSizePixel = 0,
         }, titleBar)
         self:_create("TextLabel", {
-            Size = UDim2.new(1, -80, 1, 0),
-            Position = UDim2.new(0, 16, 0, 0),
+            Size = UDim2.new(1, -70, 1, 0),
+            Position = UDim2.new(0, 12, 0, 0),
             BackgroundTransparency = 1, Text = "⚔  BLADE BALL SUITE",
             TextColor3 = COLORS.accent, TextSize = D.titleFont,
             Font = Enum.Font.GothamBold,
             TextXAlignment = Enum.TextXAlignment.Left,
         }, titleBar)
 
-        local closeSize = isTouch() and 36 or 28
+        -- [UI MENOR] close button reduzido
+        local closeSize = isTouch() and 30 or 22
         local closeBtn = self:_create("TextButton", {
             Size = UDim2.new(0, closeSize, 0, closeSize),
-            Position = UDim2.new(1, -(closeSize + 10), 0.5, -closeSize/2),
+            Position = UDim2.new(1, -(closeSize + 8), 0.5, -closeSize/2),
             BackgroundColor3 = COLORS.red, Text = "✕",
             TextColor3 = Color3.new(1,1,1),
-            TextSize = isTouch() and 18 or 14,
+            TextSize = isTouch() and 16 or 12,
             Font = Enum.Font.GothamBold,
         }, titleBar)
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 8) }, closeBtn)
+        self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, closeBtn)
         closeBtn.MouseButton1Click:Connect(function()
             main.Visible = false
             if State.ui.floatingBtn then State.ui.floatingBtn.Visible = true end
@@ -854,10 +860,10 @@ local function MAIN()
         }, main)
         self:_create("UIListLayout", {
             FillDirection = Enum.FillDirection.Horizontal,
-            Padding = UDim.new(0, 6),
+            Padding = UDim.new(0, 5),
             VerticalAlignment = Enum.VerticalAlignment.Center,
         }, tabBar)
-        self:_create("UIPadding", { PaddingLeft = UDim.new(0, 12) }, tabBar)
+        self:_create("UIPadding", { PaddingLeft = UDim.new(0, 10) }, tabBar)
 
         -- Content
         local content = self:_create("Frame", {
@@ -879,13 +885,13 @@ local function MAIN()
                 TextColor3 = (i == 1) and Color3.new(1,1,1) or COLORS.textDim,
                 TextSize = D.btnFont, Font = Enum.Font.GothamBold,
             }, tabBar)
-            self:_create("UICorner", { CornerRadius = UDim.new(0, 8) }, tabBtn)
+            self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, tabBtn)
             tabButtons[name] = tabBtn
 
             local scroll = self:_create("ScrollingFrame", {
                 Name = "Scroll_" .. name,
-                Size = UDim2.new(1, -20, 1, -10),
-                Position = UDim2.new(0, 10, 0, 6),
+                Size = UDim2.new(1, -16, 1, -8),
+                Position = UDim2.new(0, 8, 0, 4),
                 BackgroundTransparency = 1, BorderSizePixel = 0,
                 ScrollBarThickness = D.scrollThickness,
                 ScrollBarImageColor3 = COLORS.accent,
@@ -894,7 +900,7 @@ local function MAIN()
             }, content)
             self:_create("UIListLayout", {
                 SortOrder = Enum.SortOrder.LayoutOrder,
-                Padding = UDim.new(0, 6),
+                Padding = UDim.new(0, 5),
             }, scroll)
             tabContents[name] = scroll
 
@@ -915,7 +921,7 @@ local function MAIN()
             local layout = scroll:FindFirstChildOfClass("UIListLayout")
             local function upd()
                 if layout then
-                    scroll.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 12)
+                    scroll.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 10)
                 end
             end
             if layout then
@@ -929,7 +935,7 @@ local function MAIN()
         -- Combat
         local combat = tabContents["Combat"]
         self:_create("TextLabel", {
-            Size = UDim2.new(1, -20, 0, 26), BackgroundTransparency = 1,
+            Size = UDim2.new(1, -16, 0, 20), BackgroundTransparency = 1,
             Text = "⚔  COMBAT", TextColor3 = COLORS.accent,
             TextSize = D.titleFont, Font = Enum.Font.GothamBold,
             TextXAlignment = Enum.TextXAlignment.Left,
@@ -952,7 +958,7 @@ local function MAIN()
         -- Visuals
         local vis = tabContents["Visuals"]
         self:_create("TextLabel", {
-            Size = UDim2.new(1, -20, 0, 26), BackgroundTransparency = 1,
+            Size = UDim2.new(1, -16, 0, 20), BackgroundTransparency = 1,
             Text = "👁  VISUALS", TextColor3 = COLORS.accent,
             TextSize = D.titleFont, Font = Enum.Font.GothamBold,
             TextXAlignment = Enum.TextXAlignment.Left,
@@ -968,7 +974,7 @@ local function MAIN()
         -- Settings
         local st = tabContents["Settings"]
         self:_create("TextLabel", {
-            Size = UDim2.new(1, -20, 0, 26), BackgroundTransparency = 1,
+            Size = UDim2.new(1, -16, 0, 20), BackgroundTransparency = 1,
             Text = "⚙  SETTINGS", TextColor3 = COLORS.accent,
             TextSize = D.titleFont, Font = Enum.Font.GothamBold,
             TextXAlignment = Enum.TextXAlignment.Left,
@@ -981,7 +987,7 @@ local function MAIN()
         self:_createInput(st, "Tecla — Legit Mode",  "keybindLegitMode",  "J")
 
         local btnRow = self:_create("Frame", {
-            Size = UDim2.new(1, -20, 0, D.btnRowH),
+            Size = UDim2.new(1, -16, 0, D.btnRowH),
             BackgroundTransparency = 1,
         }, st)
         local function makeButton(label, color, xPos, onClick)
@@ -992,7 +998,7 @@ local function MAIN()
                 TextColor3 = Color3.new(1,1,1),
                 TextSize = D.btnFont, Font = Enum.Font.GothamBold,
             }, btnRow)
-            self:_create("UICorner", { CornerRadius = UDim.new(0, 8) }, b)
+            self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
             b.MouseButton1Click:Connect(onClick)
             return b
         end
@@ -1006,15 +1012,15 @@ local function MAIN()
             config:reset(); self:notify("Config", "Restaurado.", 2)
         end)
 
-        -- Floating button
-        local fbSize = isTouch() and 64 or 50
+        -- [UI MENOR] floating button reduzido
+        local fbSize = isTouch() and 50 or 38
         local floatingBtn = self:_create("TextButton", {
             Name = "FloatingButton",
             Size = UDim2.new(0, fbSize, 0, fbSize),
-            Position = UDim2.new(0, 20, 0.5, -fbSize/2),
+            Position = UDim2.new(0, 16, 0.5, -fbSize/2),
             BackgroundColor3 = COLORS.accent, Text = "⚔",
             TextColor3 = Color3.new(1,1,1),
-            TextSize = isTouch() and 28 or 22,
+            TextSize = isTouch() and 24 or 18,
             Font = Enum.Font.GothamBold,
             Visible = false, ZIndex = 10,
         }, self.screenGui)
@@ -1025,38 +1031,38 @@ local function MAIN()
         State.ui.floatingBtn = floatingBtn
         State.ui.mainWindow = main
 
-        -- Threat indicator
-        local tw, th = isTouch() and 200 or 140, isTouch() and 34 or 26
+        -- [UI MENOR] threat indicator reduzido
+        local tw, th = isTouch() and 160 or 110, isTouch() and 26 or 20
         local threat = self:_create("Frame", {
             Name = "ThreatIndicator",
             Size = UDim2.new(0, tw, 0, th),
-            Position = UDim2.new(0.5, -tw/2, 0, 10),
+            Position = UDim2.new(0.5, -tw/2, 0, 8),
             BackgroundColor3 = Color3.fromRGB(255, 40, 40),
             BorderSizePixel = 0, Visible = false, ZIndex = 100,
         }, self.screenGui)
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 8) }, threat)
+        self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, threat)
         self:_create("TextLabel", {
             Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
             Text = "⚠ THREAT DETECTED", TextColor3 = Color3.new(1,1,1),
-            TextSize = isTouch() and 14 or 11, Font = Enum.Font.GothamBold,
+            TextSize = isTouch() and 12 or 10, Font = Enum.Font.GothamBold,
         }, threat)
         State.ui.threatIndicator = threat
 
-        -- Stats
-        local sw, sh = isTouch() and 280 or 230, isTouch() and 26 or 22
+        -- [UI MENOR] stats reduzido
+        local sw, sh = isTouch() and 230 or 190, isTouch() and 20 or 18
         local stats = self:_create("Frame", {
             Name = "Stats",
             Size = UDim2.new(0, sw, 0, sh),
-            Position = UDim2.new(1, -(sw + 10), 1, -(sh + 10)),
+            Position = UDim2.new(1, -(sw + 8), 1, -(sh + 8)),
             BackgroundColor3 = COLORS.panel, BackgroundTransparency = 0.35,
             BorderSizePixel = 0, ZIndex = 5,
         }, self.screenGui)
-        self:_create("UICorner", { CornerRadius = UDim.new(0, 6) }, stats)
+        self:_create("UICorner", { CornerRadius = UDim.new(0, 5) }, stats)
         local statsLabel = self:_create("TextLabel", {
             Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
             Text = "FPS: -- | Ping: -- | AP: OFF",
             TextColor3 = COLORS.textDim,
-            TextSize = isTouch() and 12 or 11,
+            TextSize = isTouch() and 10 or 9,
             Font = Enum.Font.Gotham,
         }, stats)
         State.ui.statsLabel = statsLabel
