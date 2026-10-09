@@ -1,97 +1,34 @@
--- Bypass Anti-Cheat e Anti-Exploit (Delta/Roblox)
--- Adicione isso ao seu script ou execute no console do Roblox Studio / Explorer
-
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
-
--- 1. Bypass básico: Simula ações naturais do jogador
-function BypassNaturalActions()
-    -- Exemplo: Mover o personagem suavemente se ele estiver "travado"
-    local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-    
-    -- Desabilita detecção de velocidade excessiva (se aplicável)
-    if Character:FindFirstChild("HumanoidRootPart") then
-        Character.HumanoidRootPart.Anchored = false
-    end
-    
-    -- Simula um clique/movimento natural (opcional, dependendo do jogo)
-    print("[Bypass] Natural actions active.")
-end
-
--- 2. Bypass de Exploit Detector (comum em jogos com anticheat forte)
-function BypassExploitDetector()
-    -- Tenta desativar ou burlar módulos comuns de anticheat
-    local AnticheatModules = {
-        "AntiCheat",
-        "ExploitDetection",
-        "SpeedHack",
-        "FlyHack"
+        ballVel=Vector3.new(),
+        lastParryTime=0,
+        isDoubleTapping=false,
+        ui=nil,
+        espParts={},
+        threatIndicator=nil
     }
+
+    -- ═══════════════ UTILITÁRIOS MATEMÁTICOS ═══════════════
     
-    for _, ModuleName in ipairs(AnticheatModules) do
-        local FoundModule = game:GetDescendants()
-        for _, Object in ipairs(FoundModule) do
-            if Object:IsA("ModuleScript") and string.find(Object.Name, ModuleName, 1, true) then
-                -- Opcional: Desativar ou esconder o módulo
-                -- Object.Enabled = false
-                -- Ou apenas ignorá-lo
-                print("[Bypass] Found module: " .. Object.Name)
-            end
+    -- Gerador Gaussiano (Box-Muller transform simplificado ou soma de uniformes)
+    -- Soma de 12 uniformes [0,1] menos 6 dá uma aproximação razoável de normal(0,1)
+    local function gaussianRandom(mean, stdDev)
+        local sum = 0
+        for _ = 1, 12 do
+            sum += math.random()
         end
+        return mean + (sum - 6) * stdDev
     end
-end
 
--- 3. Bypass de Kick por Exploit (proteção contra kick automático)
-function PreventKickOnExploit()
-    -- Hook na função de kick do cliente
-    local OriginalKick = Players.LocalPlayer:Kick
-    function Players.LocalPlayer:Kick(Message)
-        -- Aqui você pode interceptar ou silenciar o kick
-        -- Para evitar ser kicado, você pode usar um loop para reconectar rapidamente
-        -- ou simplesmente ignorar a mensagem
-        
-        -- Exemplo: Silenciar o kick
-        -- return nil
-        
-        -- Ou reconectar automaticamente
-        task.wait(0.5)
-        game:GetService("ReplicatedStorage").DefaultChatSystemChatEvents.SayMessageRequest:FireServer("Reconnecting...", "All")
-        
-        -- Reconectar
-        game:GetService("CoreGui"):GetGuiInset() -- Força uma atualização da UI
-        
-        -- Se o jogo permitir, você pode tentar entrar novamente
-        -- Isso depende do jogo específico
+    local function clamp(val, min, max)
+        return val < min and min or (val > max and max or val)
     end
-end
 
--- 4. Bypass de Banimento (para jogos com banimento por exploit)
-function PreventBanishment()
-    -- Alguns jogos banem players que usam exploits.
-    -- Para evitar isso, você pode:
-    -- 1. Usar um proxy (como Delta) que esconde sua assinatura de exploit
-    -- 2. Evitar usar funções conhecidas como "getgenv()", "loadstring()"
-    -- 3. Não modificar valores de propriedades do jogo diretamente
-    
-    -- Exemplo: Modificar uma propriedade de forma segura
-    local function SafeModify(Property, Value)
-        local Character = LocalPlayer.Character
-        if Character then
-            local RootPart = Character:FindFirstChild("HumanoidRootPart")
-            if RootPart then
-                RootPart[Property] = Value
-            end
-        end
-    end
-    
-    -- Uso seguro:
-    -- SafeModify("Position", Vector3.new(0, 100, 0))
-end
-
--- Executar os bypasses
-BypassNaturalActions()
-BypassExploitDetector()
-PreventKickOnExploit()
-PreventBanishment()
-
-print("[Bypass] All bypasses active.")
+    -- Simula erro de leitura humana: altera ligeiramente a posição/velocidade percebida
+    local function applyReadingNoise(pos, vel, noisePercent)
+        if noisePercent == 0 then return pos, vel end
+        
+        local noiseScale = 0.5 -- Fator de escala para não ficar absurdamente errado
+        local noiseX = (math.random(-noisePercent, noisePercent) / 100) * noiseScale
+        local noiseY = (math.random(-noisePercent, noisePercent) / 100) * noiseScale
+        local noiseZ = (math.random(-noisePercent, noisePercent) / 100) * noiseScale
+        
+        local noisyPos = Vector3.new(pos.X + noiseX, pos.Y + noiseY, pos.Z +
