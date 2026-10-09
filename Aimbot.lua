@@ -1,968 +1,650 @@
---!strict
--- ============================================================
--- STEAL AN EGG — SISTEMA COMPLETO (código único)
--- LocalScript → StarterPlayer > StarterPlayerScripts
--- Nome sugerido: StealAnEggController
--- ------------------------------------------------------------
--- Este é um script único auto-contido. Ele cria a UI, o banco de
--- ovos, o analisador, os filtros, o ranking e o controller de
--- roubo. Funciona no Studio em modo teste. Em produção, ligue os
--- RemoteEvents no final (marcados com SERVER HOOK) ao seu
--- servidor real para validação.
--- ============================================================
+--[[
+    ============================================================
+    Steal An Egg — Clean Implementation (Single File)
+    ============================================================
+    Autor: Clean-room reimplementation
+    Uso:   Executor Roblox (Synapse/Krnl/Fluxus/Delta/etc.)
+    
+    Funcionalidades:
+      - Scan automático de ovos no workspace
+      - Filtro por valor mínimo (ex: 1B+)
+      - Filtro por raridade
+      - Lista de ovos com nome, valor, raridade e criaturas
+      - Ordenação por valor (maior -> menor)
+      - Auto Steal (loop controlado)
+      - Instant Steal (HoldDuration = 0)
+      - Start/Stop controls
+      - Tratamento de erros seguro (pcall)
+    
+    Observação:
+      Algumas ações dependem de código server-side (spawn de ovos,
+      bypass de guardiões, validação de hold) e NÃO podem ser
+      reproduzidas apenas pelo cliente.
+    ============================================================
+--]]
 
-local Players          = game:GetService("Players")
-local RunService       = game:GetService("RunService")
-local UserInputService = game:GetService("UserInputService")
-local TweenService     = game:GetService("TweenService")
-local ReplicatedStorage= game:GetService("ReplicatedStorage")
+-- ============================================================
+-- SERVIÇOS
+-- ============================================================
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local Workspace         = game:GetService("Workspace")
+local UserInputService  = game:GetService("UserInputService")
+local TweenService      = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local player = Players.LocalPlayer
+local LocalPlayer = Players.LocalPlayer
+local Camera      = Workspace.CurrentCamera
 
 -- ============================================================
--- 1. CONFIG — Configurações globais
+-- CONFIG (módulo interno)
 -- ============================================================
 local Config = {
-	AutoSteal        = false,
-	InstantSteal     = false,
-	MinValue         = 0,
-	MaxValue         = math.huge,
-	MinRarity        = "Comum",
-	OnlyCreature     = "",
-	MinIncome        = 0,
-	PrioritizeBest   = true,
-	FilterBestOnly   = false,
-	FilterRareChance = false,
-	Theme = {
-		Bg         = Color3.fromRGB(18, 18, 24),
-		Panel      = Color3.fromRGB(28, 28, 36),
-		PanelAlt   = Color3.fromRGB(36, 36, 46),
-		Accent     = Color3.fromRGB(120, 90, 255),
-		Accent2    = Color3.fromRGB(0, 200, 160),
-		Text       = Color3.fromRGB(240, 240, 245),
-		SubText    = Color3.fromRGB(150, 150, 165),
-		Border     = Color3.fromRGB(55, 55, 70),
-		Success    = Color3.fromRGB(0, 200, 120),
-		Warning    = Color3.fromRGB(255, 180, 0),
-		Danger     = Color3.fromRGB(230, 70, 70),
-	},
+    MinimumValue        = 0,       -- valor mínimo em número (ex: 1e9 = 1B)
+    MinimumRarity       = 1,       -- 1=Common ... 8=Secret
+    StealDelay          = 0.5,     -- delay entre tentativas (s)
+    ScanInterval        = 2,       -- intervalo de re-scan (s)
+
+    AutoStealEnabled    = false,
+    InstantStealEnabled = true,
+    AutoReturnEnabled   = false,
+    ESPEnabled          = false,
+
+    RarityOrder = {
+        Common    = 1,
+        Uncommon  = 2,
+        Rare      = 3,
+        Epic      = 4,
+        Legendary = 5,
+        Mythic    = 6,
+        Cosmic    = 7,
+        Secret    = 8,
+    },
 }
 
+-- Converte strings tipo "1.5B", "200M", "3T" em número
+function Config.ParseValue(str)
+    if type(str) == "number" then return str end
+    if type(str) ~= "string" then return 0 end
+    str = str:upper():gsub("%s", "")
+    local num = tonumber(str:match("^[%d%.]+"))
+    if not num then return 0 end
+    if str:find("K") then return num * 1e3
+    elseif str:find("M") then return num * 1e6
+    elseif str:find("B") then return num * 1e9
+    elseif str:find("T") then return num * 1e12
+    else return num end
+end
+
+-- Formata número para exibição (ex: 2500000000 -> "2.5B")
+function Config.FormatValue(n)
+    if type(n) ~= "number" then return tostring(n) end
+    if n >= 1e12 then return string.format("%.2fT", n / 1e12)
+    elseif n >= 1e9 then return string.format("%.2fB", n / 1e9)
+    elseif n >= 1e6 then return string.format("%.2fM", n / 1e6)
+    elseif n >= 1e3 then return string.format("%.2fK", n / 1e3)
+    else return tostring(math.floor(n)) end
+end
+
 -- ============================================================
--- 2. EGG DATABASE — Banco de ovos (edite aqui)
--- Estrutura: nome, valor, raridade, criaturas com chance/valor.
+-- BANCO DE DADOS DE OVOS (fallback caso atributos não existam)
 -- ============================================================
 local EggDatabase = {
-	{
-		Name = "Ovo Comum", Value = 1e5, Rarity = "Comum",
-		Creatures = {
-			{ Name = "🐣 Pintinho",  Chance = 0.70, Value = 5e4  },
-			{ Name = "🐔 Galinha",   Chance = 0.25, Value = 2e5  },
-			{ Name = "🦆 Pato",      Chance = 0.05, Value = 1e6  },
-		},
-	},
-	{
-		Name = "Ovo Raro", Value = 1e6, Rarity = "Raro",
-		Creatures = {
-			{ Name = "🐰 Coelho",    Chance = 0.55, Value = 5e5  },
-			{ Name = "🦊 Raposa",    Chance = 0.35, Value = 2e6  },
-			{ Name = "🐺 Lobo",      Chance = 0.10, Value = 1e7  },
-		},
-	},
-	{
-		Name = "Ovo Lendário", Value = 1.5e9, Rarity = "Lendário",
-		Creatures = {
-			{ Name = "🐔 Galinha",      Chance = 0.50, Value = 5e8  },
-			{ Name = "🦊 Raposa",       Chance = 0.30, Value = 1e9  },
-			{ Name = "🐉 Dragão",       Chance = 0.15, Value = 5e9  },
-			{ Name = "👑 Rei Dragão",   Chance = 0.05, Value = 2e10 },
-		},
-	},
-	{
-		Name = "Ovo Mítico", Value = 1e10, Rarity = "Mítico",
-		Creatures = {
-			{ Name = "🦄 Unicórnio",    Chance = 0.50, Value = 5e9  },
-			{ Name = "🐲 Wyvern",       Chance = 0.30, Value = 2e10 },
-			{ Name = "🔥 Fênix",        Chance = 0.15, Value = 5e10 },
-			{ Name = "🌌 Dragão Astral",Chance = 0.05, Value = 5e11 },
-		},
-	},
-	{
-		Name = "Ovo Divino", Value = 2.5e10, Rarity = "Divino",
-		Creatures = {
-			{ Name = "⚡ Anjo",         Chance = 0.50, Value = 1e10 },
-			{ Name = "🕊️ Serafim",      Chance = 0.30, Value = 5e10 },
-			{ Name = "✨ Deus Solar",   Chance = 0.15, Value = 2e11 },
-			{ Name = "🌟 Criador",      Chance = 0.05, Value = 1e12 },
-		},
-	},
-	{
-		Name = "Ovo Supremo", Value = 5e10, Rarity = "Supremo",
-		Creatures = {
-			{ Name = "💎 Titã",         Chance = 0.50, Value = 2e10 },
-			{ Name = "🌠 Estelar",      Chance = 0.30, Value = 8e10 },
-			{ Name = "🔮 Onipotente",   Chance = 0.15, Value = 5e11 },
-			{ Name = "👁️ Além-vida",    Chance = 0.05, Value = 5e12 },
-		},
-	},
+    ["Chicken Egg"]    = { value = 1,     rarity = "Common",    creatures = {"Chicken"} },
+    ["Dog Egg"]        = { value = 2,     rarity = "Common",    creatures = {"Dog"} },
+    ["Cat Egg"]        = { value = 5,     rarity = "Common",    creatures = {"Cat"} },
+    ["Bird Egg"]       = { value = 8,     rarity = "Uncommon",  creatures = {"Bird"} },
+    ["Owl Egg"]        = { value = 35,    rarity = "Rare",      creatures = {"Owl"} },
+    ["Raccoon Egg"]    = { value = 45,    rarity = "Rare",      creatures = {"Raccoon"} },
+    ["Fox Egg"]        = { value = 180,   rarity = "Epic",      creatures = {"Fox"} },
+    ["Bear Egg"]       = { value = 240,   rarity = "Epic",      creatures = {"Bear"} },
+    ["Patapim Egg"]    = { value = 1800,  rarity = "Legendary", creatures = {"Brr Brr Patapim"} },
+    ["Nightflame Egg"] = { value = 3e9,   rarity = "Mythic",    creatures = {"Nightflame"} },
+    ["Mecha Egg"]      = { value = 4e9,   rarity = "Cosmic",    creatures = {"Mecha Dreadscale"} },
+    ["Secret Egg"]     = { value = 1e10,  rarity = "Secret",    creatures = {"???"} },
 }
 
--- Anexa valor esperado, melhor criatura e renda a cada ovo
-for _, egg in ipairs(EggDatabase) do
-	local ev, best, income = 0, nil, 0
-	for _, c in ipairs(egg.Creatures) do
-		ev = ev + (c.Chance * c.Value)
-		if not best or c.Value > best.Value then best = c end
-		income = income + c.Value * c.Chance
-	end
-	egg.ExpectedValue = ev
-	egg.BestCreature  = best
-	egg.Income        = income
-end
-
-local RarityOrder = { Comum = 1, Raro = 2, Lendário = 3, Mítico = 4, Divino = 5, Supremo = 6 }
-
 -- ============================================================
--- 3. EGG ANALYZER — Filtros, ordenação e formatação
+-- EGG SCANNER (detecção)
 -- ============================================================
-local EggAnalyzer = {}
+local EggScanner = {}
+EggScanner._cached   = {}
+EggScanner._lastScan = 0
 
-function EggAnalyzer.formatNumber(n)
-	if n >= 1e12 then return string.format("%.2fT", n / 1e12) end
-	if n >= 1e9  then return string.format("%.2fB", n / 1e9) end
-	if n >= 1e6  then return string.format("%.2fM", n / 1e6) end
-	if n >= 1e3  then return string.format("%.2fK", n / 1e3) end
-	return tostring(math.floor(n))
+function EggScanner.Scan()
+    local eggs = {}
+    for _, d in ipairs(Workspace:GetDescendants()) do
+        local isEgg = false
+        if d:IsA("Model") then
+            if d:GetAttribute("EggName") or d:GetAttribute("EggValue") then
+                isEgg = true
+            elseif d.Name:find("Egg") then
+                isEgg = true
+            end
+        end
+
+        if isEgg then
+            local name    = d:GetAttribute("EggName")  or d.Name
+            local value   = d:GetAttribute("EggValue") or 0
+            local rarity  = d:GetAttribute("EggRarity") or nil
+            local creatures = d:GetAttribute("PossibleCreatures")
+
+            -- Fallback no banco de dados
+            local db = EggDatabase[name]
+            if db then
+                if value == 0 then value = db.value end
+                if not rarity then rarity = db.rarity end
+                if not creatures then creatures = db.creatures end
+            end
+
+            value   = tonumber(value) or 0
+            rarity  = rarity or "Common"
+            creatures = creatures or {}
+
+            if type(creatures) == "string" then
+                local t = {}
+                for c in creatures:gmatch("[^,]+") do
+                    table.insert(t, c:match("^%s*(.-)%s*$"))
+                end
+                creatures = t
+            end
+
+            table.insert(eggs, {
+                instance  = d,
+                name      = name,
+                value     = value,
+                rarity    = rarity,
+                creatures = creatures,
+            })
+        end
+    end
+    return eggs
 end
 
-function EggAnalyzer.matches(egg)
-	if egg.Value < Config.MinValue then return false end
-	if egg.Value > Config.MaxValue then return false end
-	if (RarityOrder[egg.Rarity] or 0) < (RarityOrder[Config.MinRarity] or 0) then return false end
-	if egg.Income < Config.MinIncome then return false end
-
-	if Config.OnlyCreature ~= "" then
-		local found = false
-		for _, c in ipairs(egg.Creatures) do
-			if string.find(string.lower(c.Name), string.lower(Config.OnlyCreature), 1, true) then
-				found = true; break
-			end
-		end
-		if not found then return false end
-	end
-
-	if Config.FilterRareChance then
-		local hasRare = false
-		for _, c in ipairs(egg.Creatures) do
-			if c.Chance <= 0.10 then hasRare = true; break end
-		end
-		if not hasRare then return false end
-	end
-
-	return true
+function EggScanner.GetCached()
+    if (os.clock() - EggScanner._lastScan) > Config.ScanInterval then
+        EggScanner._cached   = EggScanner.Scan()
+        EggScanner._lastScan = os.clock()
+    end
+    return EggScanner._cached
 end
 
-function EggAnalyzer.getSorted()
-	local list = {}
-	for _, e in ipairs(EggDatabase) do
-		if EggAnalyzer.matches(e) then table.insert(list, e) end
-	end
-	table.sort(list, function(a, b)
-		if a.ExpectedValue ~= b.ExpectedValue then return a.ExpectedValue > b.ExpectedValue end
-		if a.BestCreature.Value ~= b.BestCreature.Value then return a.BestCreature.Value > b.BestCreature.Value end
-		if (RarityOrder[a.Rarity] or 0) ~= (RarityOrder[b.Rarity] or 0) then
-			return (RarityOrder[a.Rarity] or 0) > (RarityOrder[b.Rarity] or 0)
-		end
-		return a.Value > b.Value
-	end)
-	return list
-end
-
-function EggAnalyzer.getBest()
-	local list = EggAnalyzer.getSorted()
-	return list[1]
+function EggScanner.Invalidate()
+    EggScanner._lastScan = 0
 end
 
 -- ============================================================
--- 4. STEAL CONTROLLER — Lógica de roubo
+-- FILTER (filtragem e ordenação)
 -- ============================================================
-local StealController = {
-	CurrentTarget = nil,
-	LastSteal    = 0,
-	Cooldown     = 0.35,
-	_conn        = nil,
-}
+local Filter = {}
 
--- Envia requisição de roubo. Se o RemoteEvent existir, usa-o.
--- Caso contrário, simula localmente (para testes no Studio).
-function StealController.requestSteal(egg)
-	local remotes = ReplicatedStorage:FindFirstChild("EggRemotes")
-	local stealRE = remotes and remotes:FindFirstChild("RequestSteal")
-
-	-- SERVER HOOK: se existir, o servidor valida e executa.
-	if stealRE and stealRE:IsA("RemoteEvent") then
-		stealRE:FireServer(egg.Name)
-		return true
-	end
-
-	-- Fallback local (somente Studio / teste)
-	warn("[StealController] RemoteEvent não encontrado. Simulando roubo de: " .. egg.Name)
-	return true
+function Filter.Apply(eggs)
+    local out = {}
+    for _, egg in ipairs(eggs) do
+        local rar = Config.RarityOrder[egg.rarity] or 1
+        if egg.value >= Config.MinimumValue and rar >= Config.MinimumRarity then
+            table.insert(out, egg)
+        end
+    end
+    return out
 end
 
-function StealController.tick()
-	if not Config.AutoSteal then
-		StealController.CurrentTarget = nil
-		return
-	end
-	if os.clock() - StealController.LastSteal < StealController.Cooldown then return end
-
-	local target
-	if Config.FilterBestOnly or Config.PrioritizeBest then
-		target = EggAnalyzer.getBest()
-	else
-		local list = EggAnalyzer.getSorted()
-		target = list[1]
-	end
-
-	if not target then return end
-
-	StealController.CurrentTarget = target
-	StealController.LastSteal = os.clock()
-
-	if Config.InstantSteal or Config.AutoSteal then
-		StealController.requestSteal(target)
-	end
+function Filter.SortByValue(eggs)
+    table.sort(eggs, function(a, b) return a.value > b.value end)
+    return eggs
 end
 
-function StealController.start()
-	if StealController._conn then return end
-	StealController._conn = RunService.Heartbeat:Connect(function()
-		pcall(StealController.tick)
-	end)
+function Filter.GetBest(eggs)
+    local s = Filter.SortByValue(eggs)
+    return s[1]
+end
+
+function Filter.GetWorst(eggs)
+    local s = Filter.SortByValue(eggs)
+    return s[#s]
 end
 
 -- ============================================================
--- 5. UI CONTROLLER — Interface moderna e responsiva
+-- STEAL LOGIC (roubo)
+-- ============================================================
+local StealLogic = {}
+StealLogic._lastAttempt = 0
+StealLogic._conn        = nil
+
+local function getRoot()
+    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    return char:FindFirstChild("HumanoidRootPart")
+end
+
+function StealLogic.TeleportTo(egg)
+    local root = getRoot()
+    if not root or not egg.instance then return end
+    local pos = egg.instance:GetPivot().Position
+    pcall(function()
+        root.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))
+    end)
+    task.wait(0.08)
+end
+
+function StealLogic.TriggerPrompt(egg)
+    if not egg.instance then return false end
+    local prompt = egg.instance:FindFirstChildWhichIsA("ProximityPrompt", true)
+    if not prompt then return false end
+
+    if Config.InstantStealEnabled then
+        pcall(function() prompt.HoldDuration = 0 end)
+    end
+
+    local ok = pcall(function()
+        prompt:InputHoldBegin()
+        task.wait(0.05)
+        prompt:InputHoldEnd()
+    end)
+    return ok
+end
+
+function StealLogic.StealBestEgg()
+    local eggs     = EggScanner.GetCached()
+    local filtered = Filter.Apply(eggs)
+    if #filtered == 0 then return false end
+
+    local best = Filter.GetBest(filtered)
+    if not best then return false end
+
+    StealLogic.TeleportTo(best)
+    local ok = StealLogic.TriggerPrompt(best)
+    if ok then EggScanner.Invalidate() end
+    return ok
+end
+
+function StealLogic.StartAutoSteal()
+    if StealLogic._conn then return end
+    StealLogic._conn = RunService.Heartbeat:Connect(function()
+        if not Config.AutoStealEnabled then return end
+        if (os.clock() - StealLogic._lastAttempt) < Config.StealDelay then return end
+        StealLogic._lastAttempt = os.clock()
+        pcall(StealLogic.StealBestEgg)
+    end)
+end
+
+function StealLogic.StopAutoSteal()
+    if StealLogic._conn then
+        StealLogic._conn:Disconnect()
+        StealLogic._conn = nil
+    end
+end
+
+-- ============================================================
+-- UI (interface gráfica)
 -- ============================================================
 local UI = {}
+UI._gui = nil
+UI._dragging = false
+UI._dragStart = nil
+UI._frame = nil
 
-local function new(class, props)
-	local inst = Instance.new(class)
-	for k, v in pairs(props or {}) do inst[k] = v end
-	return inst
+local function newInstance(class, props)
+    local inst = Instance.new(class)
+    for k, v in pairs(props or {}) do
+        inst[k] = v
+    end
+    return inst
 end
 
-local function corner(p, r) return new("UICorner", { CornerRadius = UDim.new(0, r or 8), Parent = p }) end
-local function stroke(p, c, t, tr)
-	return new("UIStroke", {
-		Color = c or Config.Theme.Border, Thickness = t or 1,
-		Transparency = tr or 0.3, ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Parent = p,
-	})
-end
+function UI.Create()
+    if UI._gui then UI._gui:Destroy() end
 
-function UI.build()
-	local gui = new("ScreenGui", {
-		Name = "StealAnEggUI",
-		ResetOnSpawn = false,
-		IgnoreGuiInset = true,
-		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
-		Parent = player:WaitForChild("PlayerGui"),
-	})
-	UI.gui = gui
+    local gui = newInstance("ScreenGui", {
+        Name = "StealAnEggCleanUI",
+        ResetOnSpawn = false,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        Parent = LocalPlayer:WaitForChild("PlayerGui"),
+    })
+    UI._gui = gui
 
-	-- Botão flutuante
-	local openBtn = new("TextButton", {
-		Name = "OpenBtn",
-		Size = UDim2.fromOffset(54, 54),
-		Position = UDim2.new(0, 20, 0.5, -27),
-		BackgroundColor3 = Config.Theme.Accent,
-		Text = "🥚",
-		TextSize = 26,
-		Font = Enum.Font.GothamBold,
-		AutoButtonColor = false,
-		ZIndex = 20,
-		Parent = gui,
-	})
-	corner(openBtn, 27)
-	stroke(openBtn, Config.Theme.Accent, 2, 0)
-	UI.openBtn = openBtn
+    -- Frame principal
+    local frame = newInstance("Frame", {
+        Size = UDim2.new(0, 560, 0, 440),
+        Position = UDim2.new(0.5, -280, 0.5, -220),
+        BackgroundColor3 = Color3.fromRGB(25, 27, 38),
+        BorderSizePixel = 0,
+        Parent = gui,
+    })
+    UI._frame = frame
+    newInstance("UICorner", { CornerRadius = UDim.new(0, 10), Parent = frame })
+    newInstance("UIStroke", {
+        Color = Color3.fromRGB(80, 90, 130),
+        Thickness = 1,
+        Parent = frame,
+    })
 
-	-- Painel
-	local panel = new("Frame", {
-		Name = "Panel",
-		Size = UDim2.fromOffset(480, 560),
-		Position = UDim2.new(0.5, -240, 0.5, -280),
-		BackgroundColor3 = Config.Theme.Bg,
-		BorderSizePixel = 0,
-		Visible = false,
-		ZIndex = 10,
-		Parent = gui,
-	})
-	corner(panel, 14)
-	stroke(panel, Config.Theme.Border, 1, 0.2)
-	UI.panel = panel
+    -- Barra de título (arrastável)
+    local titleBar = newInstance("Frame", {
+        Size = UDim2.new(1, 0, 0, 36),
+        BackgroundColor3 = Color3.fromRGB(40, 45, 65),
+        BorderSizePixel = 0,
+        Parent = frame,
+    })
+    newInstance("UICorner", { CornerRadius = UDim.new(0, 10), Parent = titleBar })
 
-	-- Header
-	local header = new("Frame", {
-		Name = "Header",
-		Size = UDim2.new(1, 0, 0, 48),
-		BackgroundColor3 = Config.Theme.Panel,
-		BorderSizePixel = 0,
-		Parent = panel,
-	})
-	corner(header, 14)
-	new("Frame", {
-		Size = UDim2.new(1, 0, 0, 14),
-		Position = UDim2.new(0, 0, 1, -14),
-		BackgroundColor3 = Config.Theme.Panel,
-		BorderSizePixel = 0,
-		Parent = header,
-	})
-	new("TextLabel", {
-		Size = UDim2.new(1, -80, 1, 0),
-		Position = UDim2.new(0, 18, 0, 0),
-		BackgroundTransparency = 1,
-		Font = Enum.Font.GothamBold,
-		Text = "🥚 STEAL AN EGG",
-		TextColor3 = Config.Theme.Text,
-		TextSize = 16,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Parent = header,
-	})
-	local closeBtn = new("TextButton", {
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -12, 0.5, 0),
-		Size = UDim2.fromOffset(30, 30),
-		BackgroundColor3 = Config.Theme.Danger,
-		Text = "✕",
-		TextColor3 = Color3.new(1, 1, 1),
-		Font = Enum.Font.GothamBold,
-		TextSize = 14,
-		AutoButtonColor = false,
-		Parent = header,
-	})
-	corner(closeBtn, 15)
+    newInstance("TextLabel", {
+        Size = UDim2.new(1, -100, 1, 0),
+        Position = UDim2.new(0, 14, 0, 0),
+        BackgroundTransparency = 1,
+        Text = "🥚 Steal An Egg — Clean UI",
+        TextColor3 = Color3.fromRGB(240, 240, 255),
+        Font = Enum.Font.GothamBold,
+        TextSize = 16,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = titleBar,
+    })
 
-	-- Tab bar
-	local tabBar = new("Frame", {
-		Position = UDim2.new(0, 12, 0, 58),
-		Size = UDim2.new(1, -24, 0, 34),
-		BackgroundTransparency = 1,
-		Parent = panel,
-	})
-	new("UIListLayout", {
-		FillDirection = Enum.FillDirection.Horizontal,
-		Padding = UDim.new(0, 6),
-		Parent = tabBar,
-	})
+    -- Botão fechar
+    local closeBtn = newInstance("TextButton", {
+        Size = UDim2.new(0, 30, 0, 30),
+        Position = UDim2.new(1, -36, 0, 3),
+        BackgroundColor3 = Color3.fromRGB(220, 70, 70),
+        Text = "✕",
+        TextColor3 = Color3.fromRGB(255, 255, 255),
+        Font = Enum.Font.GothamBold,
+        TextSize = 14,
+        BorderSizePixel = 0,
+        Parent = titleBar,
+    })
+    newInstance("UICorner", { CornerRadius = UDim.new(0, 6), Parent = closeBtn })
+    closeBtn.MouseButton1Click:Connect(function()
+        gui.Enabled = false
+    end)
 
-	local content = new("Frame", {
-		Position = UDim2.new(0, 12, 0, 100),
-		Size = UDim2.new(1, -24, 1, -112),
-		BackgroundTransparency = 1,
-		Parent = panel,
-	})
-	UI.content = content
-	UI.pages = {}
-	UI.tabs = {}
+    -- Drag
+    titleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            UI._dragging = true
+            UI._dragStart = input.Position - Vector3.new(frame.AbsolutePosition.X, frame.AbsolutePosition.Y, 0)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            UI._dragging = false
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if UI._dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+            local newPos = input.Position - UI._dragStart
+            frame.Position = UDim2.new(0, newPos.X, 0, newPos.Y)
+        end
+    end)
 
-	local TAB_NAMES = { "Steal", "Ovos", "Ranking", "Config" }
+    -- ============ Barra de status ============
+    local statusLabel = newInstance("TextLabel", {
+        Size = UDim2.new(1, -20, 0, 24),
+        Position = UDim2.new(0, 10, 0, 42),
+        BackgroundTransparency = 1,
+        Text = "Status: Idle",
+        TextColor3 = Color3.fromRGB(180, 220, 180),
+        Font = Enum.Font.Gotham,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = frame,
+    })
 
-	for i, name in ipairs(TAB_NAMES) do
-		local btn = new("TextButton", {
-			Size = UDim2.new(0.25, -5, 1, 0),
-			BackgroundColor3 = Config.Theme.Panel,
-			Font = Enum.Font.GothamMedium,
-			Text = name,
-			TextColor3 = Config.Theme.Text,
-			TextSize = 13,
-			AutoButtonColor = false,
-			Parent = tabBar,
-		})
-		corner(btn, 8)
-		UI.tabs[name] = btn
+    -- ============ Lista de ovos ============
+    local listFrame = newInstance("ScrollingFrame", {
+        Size = UDim2.new(1, -20, 0, 200),
+        Position = UDim2.new(0, 10, 0, 70),
+        BackgroundColor3 = Color3.fromRGB(18, 20, 28),
+        BorderSizePixel = 0,
+        ScrollBarThickness = 6,
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        Parent = frame,
+    })
+    newInstance("UICorner", { CornerRadius = UDim.new(0, 6), Parent = listFrame })
+    newInstance("UIListLayout", {
+        Padding = UDim.new(0, 2),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        Parent = listFrame,
+    })
 
-		local page = new("ScrollingFrame", {
-			Size = UDim2.fromScale(1, 1),
-			BackgroundTransparency = 1,
-			BorderSizePixel = 0,
-			ScrollBarThickness = 4,
-			ScrollBarImageColor3 = Config.Theme.Accent,
-			CanvasSize = UDim2.new(0, 0, 0, 0),
-			AutomaticCanvasSize = Enum.AutomaticSize.Y,
-			Visible = false,
-			Parent = content,
-		})
-		new("UIListLayout", { Padding = UDim.new(0, 8), Parent = page })
-		UI.pages[name] = page
+    local function addRow(text, bgColor)
+        local row = newInstance("TextLabel", {
+            Size = UDim2.new(1, -8, 0, 24),
+            BackgroundColor3 = bgColor or Color3.fromRGB(28, 30, 42),
+            BackgroundTransparency = 0,
+            Text = text,
+            TextColor3 = Color3.fromRGB(230, 230, 240),
+            Font = Enum.Font.Code,
+            TextSize = 12,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            BorderSizePixel = 0,
+            Parent = listFrame,
+        })
+        newInstance("UICorner", { CornerRadius = UDim.new(0, 4), Parent = row })
+        return row
+    end
 
-		btn.MouseButton1Click:Connect(function() UI.showPage(name) end)
-	end
+    -- Header da lista
+    addRow(string.format("%-22s %-12s %-12s %s", "OVO", "VALOR", "RARIDADE", "CRIATURAS"),
+        Color3.fromRGB(45, 50, 70))
 
-	-- Drag do painel
-	local dragging, dragStart, startPos = false, nil, nil
-	header.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = true
-			dragStart = input.Position
-			startPos = panel.Position
-		end
-	end)
-	UserInputService.InputChanged:Connect(function(input)
-		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
-			or input.UserInputType == Enum.UserInputType.Touch) then
-			local d = input.Position - dragStart
-			panel.Position = UDim2.new(
-				startPos.X.Scale, startPos.X.Offset + d.X,
-				startPos.Y.Scale, startPos.Y.Offset + d.Y
-			)
-		end
-	end)
-	UserInputService.InputEnded:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.MouseButton1
-			or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = false
-		end
-	end)
+    local function refreshList()
+        -- remove todas as linhas exceto header e layout
+        for _, child in ipairs(listFrame:GetChildren()) do
+            if child:IsA("TextLabel") then child:Destroy() end
+        end
+        addRow(string.format("%-22s %-12s %-12s %s", "OVO", "VALOR", "RARIDADE", "CRIATURAS"),
+            Color3.fromRGB(45, 50, 70))
 
-	-- Abrir/fechar
-	local isOpen = false
-	local function setOpen(state)
-		isOpen = state
-		if state then
-			panel.Visible = true
-			panel.Size = UDim2.fromOffset(480, 0)
-			TweenService:Create(panel,
-				TweenInfo.new(0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-				{ Size = UDim2.fromOffset(480, 560) }):Play()
-		else
-			local t = TweenService:Create(panel, TweenInfo.new(0.2),
-				{ Size = UDim2.fromOffset(480, 0) })
-			t:Play()
-			t.Completed:Connect(function() panel.Visible = false end)
-		end
-	end
-	openBtn.MouseButton1Click:Connect(function() setOpen(not isOpen) end)
-	closeBtn.MouseButton1Click:Connect(function() setOpen(false) end)
+        local eggs = EggScanner.Scan()
+        local sorted = Filter.SortByValue(eggs)
+        for i, egg in ipairs(sorted) do
+            local creatureStr = table.concat(egg.creatures, ", ")
+            if #creatureStr > 25 then creatureStr = creatureStr:sub(1, 25) .. "..." end
+            local name = egg.name
+            if #name > 22 then name = name:sub(1, 22) end
+            local line = string.format("%-22s %-12s %-12s %s",
+                name,
+                Config.FormatValue(egg.value),
+                egg.rarity,
+                creatureStr
+            )
+            addRow(line, i % 2 == 0 and Color3.fromRGB(28, 30, 42)
+                            or Color3.fromRGB(22, 24, 34))
+        end
+        listFrame.CanvasSize = UDim2.new(0, 0, 0, (#sorted + 1) * 26)
+        statusLabel.Text = string.format("Status: %d ovos detectados", #sorted)
+    end
 
-	UI.showPage("Steal")
-end
+    -- ============ Controles ============
+    local controlsY = 280
 
-function UI.showPage(name)
-	for k, p in pairs(UI.pages) do p.Visible = (k == name) end
-	for k, b in pairs(UI.tabs) do
-		TweenService:Create(b, TweenInfo.new(0.15), {
-			BackgroundColor3 = (k == name) and Config.Theme.Accent or Config.Theme.Panel,
-		}):Play()
-	end
-end
+    local function makeButton(text, x, width, color, callback)
+        local b = newInstance("TextButton", {
+            Size = UDim2.new(0, width, 0, 30),
+            Position = UDim2.new(0, x, 0, controlsY),
+            BackgroundColor3 = color or Color3.fromRGB(60, 80, 130),
+            Text = text,
+            TextColor3 = Color3.fromRGB(255, 255, 255),
+            Font = Enum.Font.GothamBold,
+            TextSize = 13,
+            BorderSizePixel = 0,
+            Parent = frame,
+        })
+        newInstance("UICorner", { CornerRadius = UDim.new(0, 6), Parent = b })
+        b.MouseButton1Click:Connect(callback)
+        return b
+    end
 
--- Componentes
-local function createToggle(parent, labelText, getVal, setVal)
-	local row = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 36),
-		BackgroundColor3 = Config.Theme.Panel,
-		Parent = parent,
-	})
-	corner(row, 8)
-	new("TextLabel", {
-		Size = UDim2.new(1, -80, 1, 0),
-		Position = UDim2.new(0, 12, 0, 0),
-		BackgroundTransparency = 1,
-		Font = Enum.Font.Gotham,
-		Text = labelText,
-		TextColor3 = Config.Theme.Text,
-		TextSize = 14,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Parent = row,
-	})
-	local btn = new("TextButton", {
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -12, 0.5, 0),
-		Size = UDim2.fromOffset(46, 24),
-		BackgroundColor3 = getVal() and Config.Theme.Success or Config.Theme.PanelAlt,
-		Text = "",
-		AutoButtonColor = false,
-		Parent = row,
-	})
-	corner(btn, 12)
-	local knob = new("Frame", {
-		Size = UDim2.fromOffset(20, 20),
-		Position = getVal() and UDim2.new(1, -22, 0, 2) or UDim2.new(0, 2, 0, 2),
-		BackgroundColor3 = Color3.new(1, 1, 1),
-		Parent = btn,
-	})
-	corner(knob, 10)
-	btn.MouseButton1Click:Connect(function()
-		local nv = not getVal()
-		setVal(nv)
-		TweenService:Create(btn, TweenInfo.new(0.18), {
-			BackgroundColor3 = nv and Config.Theme.Success or Config.Theme.PanelAlt,
-		}):Play()
-		TweenService:Create(knob, TweenInfo.new(0.18), {
-			Position = nv and UDim2.new(1, -22, 0, 2) or UDim2.new(0, 2, 0, 2),
-		}):Play()
-	end)
-end
+    makeButton("🔄 Refresh", 10, 110, Color3.fromRGB(60, 100, 160), function()
+        EggScanner.Invalidate()
+        refreshList()
+    end)
 
-local function createNumberInput(parent, labelText, getVal, setVal)
-	local row = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 36),
-		BackgroundColor3 = Config.Theme.Panel,
-		Parent = parent,
-	})
-	corner(row, 8)
-	new("TextLabel", {
-		Size = UDim2.new(0.5, -12, 1, 0),
-		Position = UDim2.new(0, 12, 0, 0),
-		BackgroundTransparency = 1,
-		Font = Enum.Font.Gotham,
-		Text = labelText,
-		TextColor3 = Config.Theme.Text,
-		TextSize = 14,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Parent = row,
-	})
-	local box = new("TextBox", {
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -12, 0.5, 0),
-		Size = UDim2.fromOffset(180, 28),
-		BackgroundColor3 = Config.Theme.PanelAlt,
-		Font = Enum.Font.Gotham,
-		Text = tostring(getVal()),
-		TextColor3 = Config.Theme.Text,
-		PlaceholderText = "Ex: 1000000",
-		TextSize = 13,
-		ClearTextOnFocus = false,
-		Parent = row,
-	})
-	corner(box, 6)
-	box.FocusLost:Connect(function()
-		local n = tonumber(box.Text:gsub("[^%d%.]", ""))
-		if n then setVal(n); box.Text = tostring(n) else box.Text = tostring(getVal()) end
-	end)
-end
+    makeButton("▶ Start Auto Steal", 128, 130, Color3.fromRGB(50, 140, 70), function()
+        Config.AutoStealEnabled = true
+        StealLogic.StartAutoSteal()
+        statusLabel.Text = "Status: Auto Steal ATIVO"
+        statusLabel.TextColor3 = Color3.fromRGB(140, 240, 140)
+    end)
 
-local function createDropdown(parent, labelText, options, getVal, setVal)
-	local row = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 36),
-		BackgroundColor3 = Config.Theme.Panel,
-		Parent = parent,
-	})
-	corner(row, 8)
-	new("TextLabel", {
-		Size = UDim2.new(0.5, -12, 1, 0),
-		Position = UDim2.new(0, 12, 0, 0),
-		BackgroundTransparency = 1,
-		Font = Enum.Font.Gotham,
-		Text = labelText,
-		TextColor3 = Config.Theme.Text,
-		TextSize = 14,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Parent = row,
-	})
-	local current = new("TextButton", {
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -12, 0.5, 0),
-		Size = UDim2.fromOffset(160, 28),
-		BackgroundColor3 = Config.Theme.PanelAlt,
-		Font = Enum.Font.Gotham,
-		Text = tostring(getVal()),
-		TextColor3 = Config.Theme.Text,
-		TextSize = 13,
-		AutoButtonColor = false,
-		Parent = row,
-	})
-	corner(current, 6)
+    makeButton("⏹ Stop", 266, 90, Color3.fromRGB(150, 60, 60), function()
+        Config.AutoStealEnabled = false
+        StealLogic.StopAutoSteal()
+        statusLabel.Text = "Status: Auto Steal PARADO"
+        statusLabel.TextColor3 = Color3.fromRGB(240, 140, 140)
+    end)
 
-	local list = new("Frame", {
-		Position = UDim2.new(1, -12, 0, 38),
-		AnchorPoint = Vector2.new(1, 0),
-		Size = UDim2.fromOffset(160, 0),
-		BackgroundColor3 = Config.Theme.PanelAlt,
-		ClipsDescendants = true,
-		Visible = false,
-		ZIndex = 15,
-		Parent = row,
-	})
-	corner(list, 6)
-	new("UIListLayout", { Parent = list })
-	local opened = false
-	current.MouseButton1Click:Connect(function()
-		opened = not opened
-		if opened then
-			list.Visible = true
-			TweenService:Create(list, TweenInfo.new(0.15), {
-				Size = UDim2.fromOffset(160, #options * 26),
-			}):Play()
-		else
-			list.Visible = false
-			list.Size = UDim2.fromOffset(160, 0)
-		end
-	end)
-	for _, opt in ipairs(options) do
-		local b = new("TextButton", {
-			Size = UDim2.new(1, 0, 0, 26),
-			BackgroundTransparency = 1,
-			Font = Enum.Font.Gotham,
-			Text = tostring(opt),
-			TextColor3 = Config.Theme.Text,
-			TextSize = 13,
-			Parent = list,
-		})
-		b.MouseEnter:Connect(function() b.BackgroundTransparency = 0.8 end)
-		b.MouseLeave:Connect(function() b.BackgroundTransparency = 1 end)
-		b.MouseButton1Click:Connect(function()
-			setVal(opt)
-			current.Text = tostring(opt)
-			opened = false
-			list.Visible = false
-			list.Size = UDim2.fromOffset(160, 0)
-		end)
-	end
+    makeButton("⚡ Steal Once", 364, 110, Color3.fromRGB(150, 110, 40), function()
+        local ok = StealLogic.StealBestEgg()
+        statusLabel.Text = ok and "Status: Roubo bem-sucedido" or "Status: Nenhum ovo válido"
+    end)
+
+    makeButton("👁 ESP", 482, 60, Color3.fromRGB(80, 80, 120), function()
+        Config.ESPEnabled = not Config.ESPEnabled
+        -- implementação simples: highlight via SelectionBox
+        for _, egg in ipairs(EggScanner.Scan()) do
+            if egg.instance then
+                if Config.ESPEnabled then
+                    if not egg.instance:FindFirstChild("ESPBox") then
+                        local box = Instance.new("SelectionBox")
+                        box.Name = "ESPBox"
+                        box.Adornee = egg.instance
+                        box.Color3 = Color3.fromRGB(0, 255, 100)
+                        box.LineThickness = 0.05
+                        box.Parent = egg.instance
+                    end
+                else
+                    local box = egg.instance:FindFirstChild("ESPBox")
+                    if box then box:Destroy() end
+                end
+            end
+        end
+    end)
+
+    -- ============ Filtros ============
+    local filterY = 320
+
+    -- Filtro de valor mínimo
+    newInstance("TextLabel", {
+        Size = UDim2.new(0, 130, 0, 24),
+        Position = UDim2.new(0, 10, 0, filterY),
+        BackgroundTransparency = 1,
+        Text = "Valor mínimo:",
+        TextColor3 = Color3.fromRGB(220, 220, 240),
+        Font = Enum.Font.Gotham,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = frame,
+    })
+
+    local valueBox = newInstance("TextBox", {
+        Size = UDim2.new(0, 120, 0, 26),
+        Position = UDim2.new(0, 140, 0, filterY),
+        BackgroundColor3 = Color3.fromRGB(35, 38, 55),
+        Text = "",
+        PlaceholderText = "ex: 1B / 500M",
+        TextColor3 = Color3.fromRGB(255, 255, 255),
+        Font = Enum.Font.Code,
+        TextSize = 13,
+        BorderSizePixel = 0,
+        Parent = frame,
+    })
+    newInstance("UICorner", { CornerRadius = UDim.new(0, 6), Parent = valueBox })
+
+    valueBox.FocusLost:Connect(function()
+        local txt = valueBox.Text
+        if txt == "" then
+            Config.MinimumValue = 0
+        else
+            Config.MinimumValue = Config.ParseValue(txt)
+        end
+        refreshList()
+    end)
+
+    -- Filtro de raridade
+    newInstance("TextLabel", {
+        Size = UDim2.new(0, 130, 0, 24),
+        Position = UDim2.new(0, 270, 0, filterY),
+        BackgroundTransparency = 1,
+        Text = "Raridade mínima:",
+        TextColor3 = Color3.fromRGB(220, 220, 240),
+        Font = Enum.Font.Gotham,
+        TextSize = 13,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = frame,
+    })
+
+    local rarityOptions = {"Common","Uncommon","Rare","Epic","Legendary","Mythic","Cosmic","Secret"}
+    local rarityIndex = 1
+
+    local rarityBtn = newInstance("TextButton", {
+        Size = UDim2.new(0, 130, 0, 26),
+        Position = UDim2.new(0, 400, 0, filterY),
+        BackgroundColor3 = Color3.fromRGB(60, 70, 110),
+        Text = "Common",
+        TextColor3 = Color3.fromRGB(255, 255, 255),
+        Font = Enum.Font.Gotham,
+        TextSize = 13,
+        BorderSizePixel = 0,
+        Parent = frame,
+    })
+    newInstance("UICorner", { CornerRadius = UDim.new(0, 6), Parent = rarityBtn })
+
+    rarityBtn.MouseButton1Click:Connect(function()
+        rarityIndex = rarityIndex + 1
+        if rarityIndex > #rarityOptions then rarityIndex = 1 end
+        local r = rarityOptions[rarityIndex]
+        rarityBtn.Text = r
+        Config.MinimumRarity = Config.RarityOrder[r] or 1
+        refreshList()
+    end)
+
+    -- ============ Info do executor ============
+    newInstance("TextLabel", {
+        Size = UDim2.new(1, -20, 0, 20),
+        Position = UDim2.new(0, 10, 1, -26),
+        BackgroundTransparency = 1,
+        Text = "Instant Steal: " .. (Config.InstantStealEnabled and "ON" or "OFF") ..
+               "  |  Delay: " .. Config.StealDelay .. "s",
+        TextColor3 = Color3.fromRGB(150, 150, 180),
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Parent = frame,
+    })
+
+    refreshList()
+
+    -- Refresh automático a cada 5 segundos
+    task.spawn(function()
+        while UI._gui == gui do
+            task.wait(5)
+            pcall(refreshList)
+        end
+    end)
+
+    return gui
 end
 
 -- ============================================================
--- 6. PÁGINAS DA UI
+-- MAIN (ponto de entrada)
 -- ============================================================
-
--- Página STEAL
-local function buildStealPage()
-	local page = UI.pages.Steal
-	createToggle(page, "Auto Steal", function() return Config.AutoSteal end,
-		function(v) Config.AutoSteal = v end)
-	createToggle(page, "Instant Steal", function() return Config.InstantSteal end,
-		function(v) Config.InstantSteal = v end)
-	createToggle(page, "Priorizar maior valor", function() return Config.PrioritizeBest end,
-		function(v) Config.PrioritizeBest = v end)
-	createToggle(page, "Apenas melhor ovo", function() return Config.FilterBestOnly end,
-		function(v) Config.FilterBestOnly = v end)
-
-	createDropdown(page, "Valor mínimo (presets)",
-		{ "1M+", "10M+", "100M+", "1B+", "10B+", "100B+", "Personalizado" },
-		function()
-			local v = Config.MinValue
-			if v >= 1e11 then return "100B+" end
-			if v >= 1e10 then return "10B+" end
-			if v >= 1e9  then return "1B+"  end
-			if v >= 1e8  then return "100M+" end
-			if v >= 1e7  then return "10M+"  end
-			if v >= 1e6  then return "1M+"   end
-			return "Personalizado"
-		end,
-		function(opt)
-			local map = { ["1M+"]=1e6, ["10M+"]=1e7, ["100M+"]=1e8,
-				["1B+"]=1e9, ["10B+"]=1e10, ["100B+"]=1e11 }
-			if map[opt] then Config.MinValue = map[opt] end
-		end)
-
-	createNumberInput(page, "Valor mínimo (custom)", function() return Config.MinValue end,
-		function(v) Config.MinValue = v end)
-
-	-- Info do alvo atual
-	local info = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 80),
-		BackgroundColor3 = Config.Theme.Panel,
-		Parent = page,
-	})
-	corner(info, 8)
-	stroke(info, Config.Theme.Accent, 1.5, 0.2)
-	local infoTitle = new("TextLabel", {
-		Size = UDim2.new(1, -20, 0, 24),
-		Position = UDim2.new(0, 12, 0, 8),
-		BackgroundTransparency = 1,
-		Font = Enum.Font.GothamBold,
-		Text = "🎯 Alvo atual: nenhum",
-		TextColor3 = Config.Theme.Accent2,
-		TextSize = 14,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Parent = info,
-	})
-	local infoSub = new("TextLabel", {
-		Size = UDim2.new(1, -20, 0, 20),
-		Position = UDim2.new(0, 12, 0, 36),
-		BackgroundTransparency = 1,
-		Font = Enum.Font.Gotham,
-		Text = "Valor esperado: —",
-		TextColor3 = Config.Theme.SubText,
-		TextSize = 12,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Parent = info,
-	})
-	local infoSub2 = new("TextLabel", {
-		Size = UDim2.new(1, -20, 0, 20),
-		Position = UDim2.new(0, 12, 0, 54),
-		BackgroundTransparency = 1,
-		Font = Enum.Font.Gotham,
-		Text = "Melhor criatura: —",
-		TextColor3 = Config.Theme.SubText,
-		TextSize = 12,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Parent = info,
-	})
-
-	RunService.Heartbeat:Connect(function()
-		local t = StealController.CurrentTarget
-		if t then
-			infoTitle.Text = "🎯 Alvo atual: " .. t.Name
-			infoSub.Text = "Valor esperado: " .. EggAnalyzer.formatNumber(t.ExpectedValue)
-			infoSub2.Text = "Melhor criatura: " .. t.BestCreature.Name ..
-				" (" .. EggAnalyzer.formatNumber(t.BestCreature.Value) .. ")"
-		else
-			infoTitle.Text = "🎯 Alvo atual: nenhum"
-			infoSub.Text = "Valor esperado: —"
-			infoSub2.Text = "Melhor criatura: —"
-		end
-	end)
+local function safeCall(fn, ...)
+    local ok, err = pcall(fn, ...)
+    if not ok then
+        warn("[StealAnEggClean] Erro: " .. tostring(err))
+    end
+    return ok
 end
 
--- Página OVOS — cards detalhados
-local function buildEggsPage()
-	local page = UI.pages.Ovos
-	local container = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 0),
-		BackgroundTransparency = 1,
-		AutomaticSize = Enum.AutomaticSize.Y,
-		Parent = page,
-	})
-	new("UIListLayout", { Padding = UDim.new(0, 10), Parent = container })
-
-	local function buildCards()
-		container:ClearAllChildren()
-		new("UIListLayout", { Padding = UDim.new(0, 10), Parent = container })
-
-		local sorted = EggAnalyzer.getSorted()
-		if #sorted == 0 then
-			local empty = new("TextLabel", {
-				Size = UDim2.new(1, 0, 0, 40),
-				BackgroundTransparency = 1,
-				Font = Enum.Font.Gotham,
-				Text = "Nenhum ovo bate com os filtros atuais.",
-				TextColor3 = Config.Theme.SubText,
-				TextSize = 13,
-				Parent = container,
-			})
-			return
-		end
-
-		for _, egg in ipairs(sorted) do
-			local card = new("Frame", {
-				Size = UDim2.new(1, 0, 0, 0),
-				AutomaticSize = Enum.AutomaticSize.Y,
-				BackgroundColor3 = Config.Theme.Panel,
-				Parent = container,
-			})
-			corner(card, 10)
-			stroke(card, Config.Theme.Border, 1, 0.3)
-
-			local inner = new("Frame", {
-				Size = UDim2.new(1, -20, 0, 0),
-				Position = UDim2.new(0, 10, 0, 10),
-				BackgroundTransparency = 1,
-				AutomaticSize = Enum.AutomaticSize.Y,
-				Parent = card,
-			})
-			new("UIListLayout", { Padding = UDim.new(0, 4), Parent = inner })
-
-			new("TextLabel", {
-				Size = UDim2.new(1, 0, 0, 20),
-				BackgroundTransparency = 1,
-				Font = Enum.Font.GothamBold,
-				Text = "🥚 " .. egg.Name .. "  •  " .. egg.Rarity,
-				TextColor3 = Config.Theme.Text,
-				TextSize = 15,
-				TextXAlignment = Enum.TextXAlignment.Left,
-				Parent = inner,
-			})
-			new("TextLabel", {
-				Size = UDim2.new(1, 0, 0, 16),
-				BackgroundTransparency = 1,
-				Font = Enum.Font.Gotham,
-				Text = "💰 Valor: " .. EggAnalyzer.formatNumber(egg.Value) ..
-					"   •   📈 Esperado: " .. EggAnalyzer.formatNumber(egg.ExpectedValue),
-				TextColor3 = Config.Theme.Accent2,
-				TextSize = 12,
-				TextXAlignment = Enum.TextXAlignment.Left,
-				Parent = inner,
-			})
-			new("TextLabel", {
-				Size = UDim2.new(1, 0, 0, 16),
-				BackgroundTransparency = 1,
-				Font = Enum.Font.Gotham,
-				Text = "👑 Melhor: " .. egg.BestCreature.Name ..
-					" (" .. EggAnalyzer.formatNumber(egg.BestCreature.Value) .. ")",
-				TextColor3 = Config.Theme.Warning,
-				TextSize = 12,
-				TextXAlignment = Enum.TextXAlignment.Left,
-				Parent = inner,
-			})
-
-			for _, c in ipairs(egg.Creatures) do
-				local cl = new("TextLabel", {
-					Size = UDim2.new(1, 0, 0, 16),
-					BackgroundTransparency = 1,
-					Font = Enum.Font.Gotham,
-					Text = string.format("  %s — %.0f%% — %s",
-						c.Name, c.Chance * 100, EggAnalyzer.formatNumber(c.Value)),
-					TextColor3 = Config.Theme.SubText,
-					TextSize = 12,
-					TextXAlignment = Enum.TextXAlignment.Left,
-					Parent = inner,
-				})
-			end
-
-			local pad = new("Frame", {
-				Size = UDim2.new(1, 0, 0, 10),
-				BackgroundTransparency = 1,
-				Parent = card,
-			})
-		end
-	end
-
-	buildCards()
-	UI._rebuildEggs = buildCards
-end
-
--- Página RANKING
-local function buildRankingPage()
-	local page = UI.pages.Ranking
-	local container = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 0),
-		BackgroundTransparency = 1,
-		AutomaticSize = Enum.AutomaticSize.Y,
-		Parent = page,
-	})
-
-	local function build()
-		container:ClearAllChildren()
-		new("UIListLayout", { Padding = UDim.new(0, 8), Parent = container })
-
-		local sorted = EggAnalyzer.getSorted()
-		local medals = { "🏆 #1", "🥈 #2", "🥉 #3" }
-		for i, egg in ipairs(sorted) do
-			local label = medals[i] or ("#" .. i)
-			local row = new("Frame", {
-				Size = UDim2.new(1, 0, 0, 44),
-				BackgroundColor3 = i == 1 and Config.Theme.Accent or Config.Theme.Panel,
-				Parent = container,
-			})
-			corner(row, 8)
-			new("TextLabel", {
-				Size = UDim2.new(0.55, -12, 1, 0),
-				Position = UDim2.new(0, 12, 0, 0),
-				BackgroundTransparency = 1,
-				Font = Enum.Font.GothamBold,
-				Text = label .. " — " .. egg.Name,
-				TextColor3 = Color3.new(1, 1, 1),
-				TextSize = 14,
-				TextXAlignment = Enum.TextXAlignment.Left,
-				Parent = row,
-			})
-			new("TextLabel", {
-				AnchorPoint = Vector2.new(1, 0.5),
-				Position = UDim2.new(1, -12, 0.5, 0),
-				Size = UDim2.new(0.45, -12, 1, 0),
-				BackgroundTransparency = 1,
-				Font = Enum.Font.GothamBold,
-				Text = EggAnalyzer.formatNumber(egg.ExpectedValue) .. " EV",
-				TextColor3 = Color3.new(1, 1, 1),
-				TextSize = 13,
-				TextXAlignment = Enum.TextXAlignment.Right,
-				Parent = row,
-			})
-		end
-	end
-
-	build()
-	UI._rebuildRanking = build
-end
-
--- Página CONFIG — filtros avançados
-local function buildConfigPage()
-	local page = UI.pages.Config
-	createNumberInput(page, "Valor máximo", function() return Config.MaxValue end,
-		function(v) Config.MaxValue = v end)
-	createNumberInput(page, "Renda mínima", function() return Config.MinIncome end,
-		function(v) Config.MinIncome = v end)
-	createDropdown(page, "Raridade mínima",
-		{ "Comum", "Raro", "Lendário", "Mítico", "Divino", "Supremo" },
-		function() return Config.MinRarity end,
-		function(v) Config.MinRarity = v end)
-
-	local row = new("Frame", {
-		Size = UDim2.new(1, 0, 0, 36),
-		BackgroundColor3 = Config.Theme.Panel,
-		Parent = page,
-	})
-	corner(row, 8)
-	new("TextLabel", {
-		Size = UDim2.new(0.5, -12, 1, 0),
-		Position = UDim2.new(0, 12, 0, 0),
-		BackgroundTransparency = 1,
-		Font = Enum.Font.Gotham,
-		Text = "Apenas criatura (nome)",
-		TextColor3 = Config.Theme.Text,
-		TextSize = 14,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		Parent = row,
-	})
-	local box = new("TextBox", {
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -12, 0.5, 0),
-		Size = UDim2.fromOffset(180, 28),
-		BackgroundColor3 = Config.Theme.PanelAlt,
-		Font = Enum.Font.Gotham,
-		Text = Config.OnlyCreature,
-		PlaceholderText = "Ex: Dragão",
-		TextColor3 = Config.Theme.Text,
-		TextSize = 13,
-		ClearTextOnFocus = false,
-		Parent = row,
-	})
-	corner(box, 6)
-	box.FocusLost:Connect(function()
-		Config.OnlyCreature = box.Text
-	end)
-
-	createToggle(page, "Apenas ovos com criatura rara (≤10%)",
-		function() return Config.FilterRareChance end,
-		function(v) Config.FilterRareChance = v end)
-
-	local apply = new("TextButton", {
-		Size = UDim2.new(1, 0, 0, 38),
-		BackgroundColor3 = Config.Theme.Accent,
-		Font = Enum.Font.GothamBold,
-		Text = "Aplicar filtros",
-		TextColor3 = Color3.new(1, 1, 1),
-		TextSize = 14,
-		AutoButtonColor = false,
-		Parent = page,
-	})
-	corner(apply, 8)
-	apply.MouseButton1Click:Connect(function()
-		if UI._rebuildEggs then UI._rebuildEggs() end
-		if UI._rebuildRanking then UI._rebuildRanking() end
-	end)
-end
-
--- ============================================================
--- 7. BOOTSTRAP
--- ============================================================
-UI.build()
-buildStealPage()
-buildEggsPage()
-buildRankingPage()
-buildConfigPage()
-StealController.start()
-
--- Rebuild automático do ranking a cada 5s (caso filtros mudem)
-task.spawn(function()
-	while true do
-		task.wait(5)
-		if UI._rebuildRanking then UI._rebuildRanking() end
-	end
+safeCall(function()
+    UI.Create()
+    print("[StealAnEggClean] Carregado com sucesso!")
 end)
 
-print("[StealAnEgg] Sistema carregado. Clique em 🥚 para abrir.")
+-- Atalho para mostrar/esconder UI com RightShift
+UserInputService.InputBegan:Connect(function(input, gpe)
+    if gpe then return end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        if UI._gui then UI._gui.Enabled = not UI._gui.Enabled end
+    end
+end)
