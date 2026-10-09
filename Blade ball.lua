@@ -1,10 +1,14 @@
 --[[
-    BLADE BALL SUITE — v2.0 (bugfix + anti-detect)
-    Execução única, auto-contido, com trap de erro no topo.
---]]
+    BLADE BALL SUITE — v3.0 "GHOST"
+    Foco: anti-detect via humanização estatística.
+    - Timing gaussiano (não uniforme) em TODOS os pontos de decisão
+    - Reação comprometida POR AMEAÇA (não re-rolada por frame)
+    - Ruído de "leitura" na posição/velocidade da bola
+    - Double-tap ocasional (humano clica 2x)
+    - legitMode agora afeta o comportamento de verdade
+]]
 
 local function MAIN()
-    -- ═══════════════ SERVIÇOS ═══════════════
     local Players             = game:GetService("Players")
     local RunService          = game:GetService("RunService")
     local UserInputService    = game:GetService("UserInputService")
@@ -15,7 +19,6 @@ local function MAIN()
     local LocalPlayer = Players.LocalPlayer
     if not LocalPlayer then error("LocalPlayer indisponível") end
 
-    -- ── registry global: limpa conexões de execuções anteriores ──
     local REG = (getgenv and getgenv()) or _G
     if REG.BB_Suite_Conns then
         for _, c in ipairs(REG.BB_Suite_Conns) do pcall(function() c:Disconnect() end) end
@@ -29,9 +32,14 @@ local function MAIN()
     -- ═══════════════ CONFIG ═══════════════
     local DEFAULT_CONFIG = {
         autoParryEnabled=false, manualSpamEnabled=false,
-        delayMs=0, parryRange=18, sensitivity=50,
+        delayMs=0, parryRange=24, sensitivity=50,
         legitMode=false, fastReactMode=false, antiRepeatEnabled=true,
         stealthMode=true, missChance=4,
+        -- ── novos parâmetros de humanização ──
+        legitReactionBase=110,   -- ms base de reação
+        legitReactionSpread=35,  -- ms de desvio (gaussiano)
+        doubleTapChance=10,      -- % de chance de clicar 2x
+        readingNoise=2,          -- % de erro ao "ler" a bola
         ballESP=false, ballHighlight=false, showTrajectory=false,
         showDistance=false, showSpeed=false, playerESP=false,
         playerHighlight=false, showThreatIndicator=true,
@@ -89,7 +97,10 @@ local function MAIN()
         currentBall=nil, ballTarget=nil, ballDistance=math.huge,
         ballSpeed=0, ballPosition=Vector3.zero,
         localHRP=nil, lastParryTime=0,
-        threatDetected=false, missThisThreat=false, turboActive=false,
+        -- modelo de ameaça "commit"
+        threatActive=false, committedThreshold=0.11,
+        missThisThreat=false, willDouble=false, doubleDone=false,
+        turboActive=false,
         fps=0, ping=0, ui={},
     }
 
@@ -126,18 +137,65 @@ local function MAIN()
     end
     local ballTracker = BallTracker.new()
 
+    -- ═══════════════ STEALTH / HUMANIZAÇÃO ═══════════════
+    local Stealth = {}
+    function Stealth.gauss()
+        -- Box-Muller: distribuição normal padrão
+        local u1 = math.max(math.random(), 1e-6)
+        local u2 = math.random()
+        return math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
+    end
+    local function gclamp(mean, sd, lo, hi)
+        return math.clamp(mean + Stealth.gauss() * sd, lo, hi)
+    end
+    Stealth.gclamp = gclamp
+
+    function Stealth.thresholdJitter(base)
+        if not config:get("stealthMode") then return base end
+        return base * (1 + Stealth.gauss() * 0.15)
+    end
+
+    function Stealth.clickPoint()
+        local vp = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize)
+                   or Vector2.new(1280, 720)
+        if not config:get("stealthMode") then
+            return math.floor(vp.X / 2), math.floor(vp.Y / 2)
+        end
+        -- deslocamento gaussiano: a maioria dos cliques perto do centro, alguns longe
+        local sx, sy = vp.X * 0.05, vp.Y * 0.05
+        local x = vp.X / 2 + Stealth.gauss() * sx
+        local y = vp.Y / 2 + Stealth.gauss() * sy
+        return math.floor(math.clamp(x, 4, vp.X - 4)),
+               math.floor(math.clamp(y, 4, vp.Y - 4))
+    end
+
+    function Stealth.holdTime()
+        if not config:get("stealthMode") then return 0.02 end
+        -- pressão de botão ~26ms, variação gaussiana (10–65ms)
+        return gclamp(0.026, 0.011, 0.008, 0.065)
+    end
+
     -- ═══════════════ THREAT ANALYZER ═══════════════
     local ThreatAnalyzer = {}
     ThreatAnalyzer.__index = ThreatAnalyzer
     function ThreatAnalyzer.new() return setmetatable({}, ThreatAnalyzer) end
+
     function ThreatAnalyzer:isThreat(cfg)
         local ball, hrp = State.currentBall, State.localHRP
         if not ball or not hrp then return false, 0, math.huge end
         if State.ballTarget ~= LocalPlayer.Name then return false, 0, math.huge end
+
         local ballPos, hrpPos = State.ballPosition, hrp.Position
         local dist  = (hrpPos - ballPos).Magnitude
+
+        -- ruído de "leitura": o script não lê a posição com precisão perfeita
+        if config:get("stealthMode") then
+            dist = dist * (1 + Stealth.gauss() * ((cfg.readingNoise or 2) / 100))
+        end
+
         local speed = State.ballSpeed
         if dist > cfg.parryRange or speed < 5 then return false, dist, math.huge end
+
         local z = ball:FindFirstChild("zoomies")
         if z and z:IsA("BodyVelocity") and z.VectorVelocity.Magnitude > 0.01 then
             local dot = z.VectorVelocity.Unit:Dot((hrpPos - ballPos).Unit)
@@ -145,37 +203,22 @@ local function MAIN()
         end
         return true, dist, dist / math.max(speed, 0.1)
     end
+
+    -- Chamado UMA vez por ameaça (commit). O tempo de reação vira alvo fixo,
+    -- então cada parry sai num offset diferente -> quebra o padrão robótico.
     function ThreatAnalyzer:getParryThreshold(cfg)
-        local t = 0.35
-        t = t * (1.0 - (cfg.sensitivity / 100) * 0.5)
-        t = t + (cfg.delayMs / 1000)
-        if cfg.fastReactMode then t = t * 0.6 end
-        return math.max(0.02, t)
+        local base = (cfg.legitReactionBase or 110) / 1000
+        base = base + ((50 - cfg.sensitivity) / 100) * 0.08
+        base = base + (cfg.delayMs / 1000)
+        if cfg.fastReactMode then base = base * 0.7 end
+        if config:get("legitMode") then base = base + 0.015 end
+
+        if config:get("stealthMode") then
+            base = base + Stealth.gauss() * ((cfg.legitReactionSpread or 35) / 1000)
+        end
+        return math.max(0.02, base)
     end
     local threatAnalyzer = ThreatAnalyzer.new()
-
-    -- ═══════════════ STEALTH / HUMANIZAÇÃO ═══════════════
-    local Stealth = {}
-    function Stealth.gauss()
-        local u1 = math.max(math.random(), 1e-6)
-        local u2 = math.random()
-        return math.sqrt(-2 * math.log(u1)) * math.cos(2 * math.pi * u2)
-    end
-    function Stealth.thresholdJitter(base)
-        if not config:get("stealthMode") then return base end
-        return base * (1 + Stealth.gauss() * 0.12)
-    end
-    function Stealth.clickPoint()
-        local vp = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize)
-                   or Vector2.new(1280, 720)
-        local j = config:get("stealthMode") and 45 or 0
-        return math.floor(vp.X / 2) + math.random(-j, j),
-               math.floor(vp.Y / 2) + math.random(-j, j)
-    end
-    function Stealth.holdTime()
-        if not config:get("stealthMode") then return 0.02 end
-        return math.random(9, 30) / 1000
-    end
 
     -- ═══════════════ PARRY ENGINE ═══════════════
     local ParryEngine = {}
@@ -185,7 +228,7 @@ local function MAIN()
     function ParryEngine:getCooldown()
         if State.turboActive then
             local c = 0.035
-            if config:get("stealthMode") then c = c * (1 + Stealth.gauss() * 0.15) end
+            if config:get("stealthMode") then c = c * (1 + Stealth.gauss() * 0.18) end
             return math.max(c, 0.02)
         end
         local cd
@@ -194,14 +237,16 @@ local function MAIN()
         else
             cd = PARRY_COOLDOWN
         end
-        if config:get("stealthMode") then cd = cd * (1 + Stealth.gauss() * 0.10) end
+        if config:get("stealthMode") then cd = cd * (1 + Stealth.gauss() * 0.12) end
         return math.max(cd, 0.02)
     end
 
-    function ParryEngine:executeParry()
+    function ParryEngine:executeParry(force)
         local now = tick()
-        if now - State.lastParryTime < ParryEngine:getCooldown() then return false end
-        if config:get("antiRepeatEnabled") and (now - State.lastParryTime) < 0.05 then return false end
+        if not force then
+            if now - State.lastParryTime < ParryEngine:getCooldown() then return false end
+            if config:get("antiRepeatEnabled") and (now - State.lastParryTime) < 0.05 then return false end
+        end
 
         State.lastParryTime = now
         local cx, cy = Stealth.clickPoint()
@@ -216,15 +261,15 @@ local function MAIN()
     function ParryEngine:update()
         if not State.localHRP then return end
 
-        -- manual spam / turbo: parry contínuo, independente de ameaça
         if config:get("manualSpamEnabled") or State.turboActive then
             ParryEngine:executeParry()
         end
 
         if not config:get("autoParryEnabled") then
-            if State.threatDetected then
-                State.threatDetected = false
-                State.missThisThreat = false
+            if State.threatActive then
+                State.threatActive = false
+                State.willDouble = false
+                State.doubleDone = false
                 if State.ui.threatIndicator then State.ui.threatIndicator.Visible = false end
             end
             return
@@ -232,20 +277,38 @@ local function MAIN()
 
         local isThreat, _, tti = threatAnalyzer:isThreat(config.data)
 
-        if isThreat and not State.threatDetected then
+        -- início de nova ameaça: "compromete" um tempo de reação e decide miss/double
+        if isThreat and not State.threatActive then
+            State.threatActive = true
+            State.doubleDone = false
+            State.committedThreshold = threatAnalyzer:getParryThreshold(config.data)
+
             local mc = config:get("missChance") or 0
             State.missThisThreat = config:get("stealthMode") and (math.random() * 100 < mc)
-        end
-        if isThreat ~= State.threatDetected then
-            State.threatDetected = isThreat
-            if not isThreat then State.missThisThreat = false end
+
+            local spam = config:get("manualSpamEnabled") or State.turboActive
+            State.willDouble = config:get("stealthMode") and not spam
+                              and (math.random() * 100 < (config:get("doubleTapChance") or 0))
+
             if State.ui.threatIndicator and config:get("showThreatIndicator") then
-                State.ui.threatIndicator.Visible = isThreat
+                State.ui.threatIndicator.Visible = true
             end
+        elseif not isThreat and State.threatActive then
+            State.threatActive = false
+            State.willDouble = false
+            State.doubleDone = false
+            if State.ui.threatIndicator then State.ui.threatIndicator.Visible = false end
         end
-        if isThreat and not State.missThisThreat
-           and tti <= Stealth.thresholdJitter(threatAnalyzer:getParryThreshold(config.data)) then
+
+        if isThreat and not State.missThisThreat and tti <= State.committedThreshold then
             ParryEngine:executeParry()
+
+            -- double-tap: humano às vezes clica 2x, com espaçamento curto variável
+            if State.willDouble and not State.doubleDone then
+                State.doubleDone = true
+                local d = math.random(55, 130) / 1000
+                task.delay(d, function() ParryEngine:executeParry(true) end)
+            end
         end
     end
     local parryEngine = ParryEngine.new()
@@ -344,7 +407,7 @@ local function MAIN()
     end
     function ManualSpam:setVisible(v) if self._frame then self._frame.Visible = v end end
 
-    -- ═══════════════ VISUALS (trajectory com pool) ═══════════════
+    -- ═══════════════ VISUALS ═══════════════
     local Visuals = {}
     Visuals.__index = Visuals
     function Visuals.new()
@@ -576,24 +639,24 @@ local function MAIN()
             TextColor3 = COLORS.text, TextSize = D.labelFont, Font = Enum.Font.Gotham,
             TextXAlignment = Enum.TextXAlignment.Left,
         }, frame)
-        local track = self:_create("Frame", {
+        local track2 = self:_create("Frame", {
             Size = UDim2.new(0, D.toggleTrackW, 0, D.toggleTrackH),
             Position = UDim2.new(1, -(D.toggleTrackW + D.pad), 0.5, -D.toggleTrackH/2),
             BackgroundColor3 = COLORS.border, BorderSizePixel = 0,
         }, frame)
-        self:_create("UICorner", { CornerRadius = UDim.new(1, 0) }, track)
+        self:_create("UICorner", { CornerRadius = UDim.new(1, 0) }, track2)
         local knob = self:_create("Frame", {
             Size = UDim2.new(0, D.toggleKnob, 0, D.toggleKnob),
             Position = UDim2.new(0, 3, 0.5, -D.toggleKnob/2),
             BackgroundColor3 = COLORS.textDim, BorderSizePixel = 0,
-        }, track)
+        }, track2)
         self:_create("UICorner", { CornerRadius = UDim.new(1, 0) }, knob)
         local btn = self:_create("TextButton", { Size = UDim2.new(1,0,1,0), BackgroundTransparency = 1, Text = "" }, frame)
 
         local onX = D.toggleTrackW - D.toggleKnob - 3
         local state = config:get(configKey) or false
         local function updateVisual(on)
-            TweenService:Create(track, TweenInfo.new(0.2), {
+            TweenService:Create(track2, TweenInfo.new(0.2), {
                 BackgroundColor3 = on and COLORS.accent or COLORS.border }):Play()
             TweenService:Create(knob, TweenInfo.new(0.2), {
                 Position = UDim2.new(0, on and onX or 3, 0.5, -D.toggleKnob/2),
@@ -910,6 +973,11 @@ local function MAIN()
         self:_createSlider(combat, "Spam Frequency", "spamFrequency", 10, 500, " ms")
         self:_createToggle(combat, "Stealth Mode", "stealthMode")
         self:_createSlider(combat, "Miss Chance", "missChance", 0, 15, "%")
+        -- novos controles de humanização
+        self:_createSlider(combat, "Legit Reaction", "legitReactionBase", 60, 260, " ms")
+        self:_createSlider(combat, "Reaction Spread", "legitReactionSpread", 5, 120, " ms")
+        self:_createSlider(combat, "Double Tap", "doubleTapChance", 0, 40, "%")
+        self:_createSlider(combat, "Reading Noise", "readingNoise", 0, 10, "%")
 
         local vis = tabContents["Visuals"]
         self:_create("TextLabel", {
@@ -1024,7 +1092,7 @@ local function MAIN()
 
     local ui = UICore.new()
 
-    -- ═══════════════ KEYBINDS (case-insensitive) ═══════════════
+    -- ═══════════════ KEYBINDS ═══════════════
     track(UserInputService.InputBegan:Connect(function(input, gp)
         if gp then return end
         local key = input.KeyCode.Name
@@ -1078,7 +1146,6 @@ local function MAIN()
     print("[BB] Script inicializado com sucesso.")
 end
 
--- ═══════════════ TRAP DE ERRO ═══════════════
 local ok, err = xpcall(MAIN, function(e)
     return tostring(e) .. "\n" .. debug.traceback("", 2)
 end)
