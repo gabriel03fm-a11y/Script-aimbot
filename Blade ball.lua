@@ -1,10 +1,10 @@
 --[[
-    SCRIPT: Aimbot + Hitbox Extender + ESP (Mobile UI) - v1.1
-    CORREÇÕES:
-      - Aimbot agora usa BindToRenderStep (prioridade correta)
-      - FOV com círculo visual na tela
-      - Suporte completo a mobile (centro da tela)
-      - Suavidade corrigida
+    SCRIPT: Aimbot + Hitbox Extender + ESP (Mobile UI) - v1.2
+    CORREÇÕES v1.2:
+      - Wall Check (não mira através de paredes)
+      - FOV rigoroso (só pega quem está dentro do círculo)
+      - Círculo do FOV em ScreenGui separado (sempre visível)
+      - Mira para de puxar quando alvo sai do FOV
 --]]
 
 -- ============================================================
@@ -33,14 +33,13 @@ local Settings = {
     TargetPart = "Head",
     TeamCheck = true,
     MaxDistance = 500,
+    WallCheck = true,           -- 🔥 NOVO
     ShowFovCircle = true,
     -- Hitbox
     HitboxEnabled = false,
     HitboxSize = 5,
-    HitboxTransparency = 0.7,
     -- ESP
     ESPEnabled = false,
-    ESPBox = true,
     ESPName = true,
     ESPHealth = true,
     ESPDistance = true,
@@ -58,10 +57,11 @@ local AimbotBindName = "AimbotRenderStep"
 local HitboxConnections = {}
 local ESPObjects = {}
 local FovCircle = nil
+local FovGui = nil          -- 🔥 ScreenGui dedicado ao FOV
 local ScreenGui = nil
 
 -- ============================================================
--- FUNÇÕES UTILITÁRIAS
+-- UTILITÁRIOS
 -- ============================================================
 local function IsEnemy(player)
     if not Settings.TeamCheck then return true end
@@ -101,13 +101,41 @@ local function GetTargetPart(character, partName)
     return character:FindFirstChild(partName)
 end
 
+-- 🔥 NOVO: Verifica linha de visão (sem paredes entre câmera e alvo)
+local function HasLineOfSight(targetPart)
+    local myChar = LocalPlayer.Character
+    if not myChar then return false end
+
+    local origin = Camera.CFrame.Position
+    local direction = targetPart.Position - origin
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local excludeList = { myChar }
+    if targetPart.Parent then table.insert(excludeList, targetPart.Parent) end
+    params.FilterDescendantsInstances = excludeList
+    params.IgnoreWater = true
+
+    local result = Workspace:Raycast(origin, direction, params)
+    return result == nil
+end
+
 -- ============================================================
 -- AIMBOT
 -- ============================================================
 
--- Cria o círculo visual do FOV
+-- Cria o círculo visual do FOV em ScreenGui separado (DisplayOrder alto)
 local function CreateFovCircle()
-    if FovCircle and FovCircle.Parent then FovCircle:Destroy() end
+    if FovCircle then FovCircle:Destroy() end
+    if FovGui then FovGui:Destroy() end
+
+    FovGui = Instance.new("ScreenGui")
+    FovGui.Name = "FovGui"
+    FovGui.ResetOnSpawn = false
+    FovGui.IgnoreGuiInset = true
+    FovGui.DisplayOrder = 999999
+    FovGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    FovGui.Parent = CoreGui
 
     local circle = Instance.new("Frame")
     circle.Name = "FovCircle"
@@ -116,18 +144,19 @@ local function CreateFovCircle()
     circle.Size = UDim2.new(0, Settings.FOV * 2, 0, Settings.FOV * 2)
     circle.BackgroundTransparency = 1
     circle.BorderSizePixel = 0
-    circle.ZIndex = 5
+    circle.ZIndex = 100
     circle.Visible = Settings.AimbotEnabled and Settings.ShowFovCircle
-    circle.Parent = ScreenGui
+    circle.Parent = FovGui
 
     local corner = Instance.new("UICorner")
     corner.CornerRadius = UDim.new(1, 0)
     corner.Parent = circle
 
     local stroke = Instance.new("UIStroke")
-    stroke.Thickness = 1.5
+    stroke.Thickness = 2
     stroke.Color = Color3.fromRGB(80, 200, 255)
-    stroke.Transparency = 0.3
+    stroke.Transparency = 0.1
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
     stroke.Parent = circle
 
     FovCircle = circle
@@ -140,7 +169,7 @@ local function UpdateFovCircle()
     FovCircle.Visible = Settings.AimbotEnabled and Settings.ShowFovCircle
 end
 
--- Encontra o alvo mais próximo do centro da tela
+-- Encontra alvo dentro do FOV, com wall check
 local function GetClosestTarget()
     local closestTarget = nil
     local shortestDist = math.huge
@@ -157,14 +186,20 @@ local function GetClosestTarget()
             local char = player.Character
             local targetPart = GetTargetPart(char, Settings.TargetPart)
             if targetPart then
+                -- Filtro 1: distância máxima
                 local worldDist = (myPos - targetPart.Position).Magnitude
                 if worldDist <= Settings.MaxDistance then
+                    -- Filtro 2: visível na tela
                     local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
                     if onScreen then
+                        -- Filtro 3: dentro do FOV
                         local screenDist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
                         if screenDist <= Settings.FOV and screenDist < shortestDist then
-                            shortestDist = screenDist
-                            closestTarget = player
+                            -- Filtro 4: wall check
+                            if not Settings.WallCheck or HasLineOfSight(targetPart) then
+                                shortestDist = screenDist
+                                closestTarget = player
+                            end
                         end
                     end
                 end
@@ -174,21 +209,31 @@ local function GetClosestTarget()
     return closestTarget
 end
 
--- Loop do aimbot (executado ANTES da câmera do Roblox)
+-- Loop do aimbot
 local function UpdateAimbot()
     if not Settings.AimbotEnabled then return end
 
     local target = GetClosestTarget()
     CurrentTarget = target
 
-    if target and target.Character then
-        local targetPart = GetTargetPart(target.Character, Settings.TargetPart)
-        if targetPart then
-            local targetCFrame = CFrame.new(Camera.CFrame.Position, targetPart.Position)
-            local alpha = 1 - math.clamp(Settings.Smoothness, 0, 0.99)
-            Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, alpha)
-        end
-    end
+    if not target or not target.Character then return end
+
+    local targetPart = GetTargetPart(target.Character, Settings.TargetPart)
+    if not targetPart then return end
+
+    -- Revalida FOV antes de puxar
+    local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+    if not onScreen then return end
+    local center = Camera.ViewportSize / 2
+    local screenDist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+    if screenDist > Settings.FOV then return end
+
+    -- Revalida wall check
+    if Settings.WallCheck and not HasLineOfSight(targetPart) then return end
+
+    local targetCFrame = CFrame.new(Camera.CFrame.Position, targetPart.Position)
+    local alpha = 1 - math.clamp(Settings.Smoothness, 0, 0.99)
+    Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, alpha)
 end
 
 local function ToggleAimbot(state)
@@ -212,8 +257,7 @@ local function ApplyHitbox(player)
     if player == LocalPlayer then return end
     if not IsAlive(player) or not IsEnemy(player) then return end
 
-    local character = player.Character
-    for _, part in ipairs(character:GetChildren()) do
+    for _, part in ipairs(player.Character:GetChildren()) do
         if part:IsA("BasePart") then
             if not part:GetAttribute("OriginalSize") then
                 part:SetAttribute("OriginalSize", part.Size)
@@ -254,9 +298,7 @@ local function ToggleHitbox(state)
         UpdateAllHitboxes()
         if not HitboxConnections.loop then
             HitboxConnections.loop = RunService.Heartbeat:Connect(function()
-                if Settings.HitboxEnabled then
-                    UpdateAllHitboxes()
-                end
+                if Settings.HitboxEnabled then UpdateAllHitboxes() end
             end)
         end
     else
@@ -278,7 +320,6 @@ local function DestroyESP(player)
     if not esp then return end
     if esp.Highlight then esp.Highlight:Destroy() end
     if esp.Billboard then esp.Billboard:Destroy() end
-    if esp.Box then esp.Box:Destroy() end
     ESPObjects[player] = nil
 end
 
@@ -295,7 +336,6 @@ local function CreateESP(player)
 
     local color = IsEnemy(player) and Settings.ESPEnemyColor or Settings.ESPTeamColor
 
-    -- Highlight
     local highlight = nil
     if Settings.ESPHighlight then
         highlight = Instance.new("Highlight")
@@ -308,7 +348,6 @@ local function CreateESP(player)
         highlight.Parent = character
     end
 
-    -- Billboard (Nome, Distância, Vida)
     local billboard = Instance.new("BillboardGui")
     billboard.Name = "ESP_Billboard"
     billboard.Adornee = rootPart
@@ -399,9 +438,7 @@ local function UpdateESP()
             esp.DistanceLabel.Visible = Settings.ESPDistance
         end
 
-        if esp.HealthBg then
-            esp.HealthBg.Visible = Settings.ESPHealth
-        end
+        if esp.HealthBg then esp.HealthBg.Visible = Settings.ESPHealth end
 
         if esp.HealthBar then
             local hp = humanoid.Health / math.max(humanoid.MaxHealth, 1)
@@ -421,9 +458,7 @@ local function ToggleESP(state)
     Settings.ESPEnabled = state
     if state then
         for _, player in ipairs(Players:GetPlayers()) do
-            if player ~= LocalPlayer then
-                CreateESP(player)
-            end
+            if player ~= LocalPlayer then CreateESP(player) end
         end
         if not ESPObjects.loop then
             local lastUpdate = 0
@@ -437,9 +472,7 @@ local function ToggleESP(state)
             end)
         end
     else
-        for player, _ in pairs(ESPObjects) do
-            DestroyESP(player)
-        end
+        for player, _ in pairs(ESPObjects) do DestroyESP(player) end
         if ESPObjects.loop then
             ESPObjects.loop:Disconnect()
             ESPObjects.loop = nil
@@ -452,12 +485,8 @@ end
 -- ============================================================
 local function OnCharacterAdded(player, character)
     task.wait(0.5)
-    if Settings.HitboxEnabled and IsEnemy(player) then
-        ApplyHitbox(player)
-    end
-    if Settings.ESPEnabled then
-        CreateESP(player)
-    end
+    if Settings.HitboxEnabled and IsEnemy(player) then ApplyHitbox(player) end
+    if Settings.ESPEnabled then CreateESP(player) end
 end
 
 for _, player in ipairs(Players:GetPlayers()) do
@@ -495,7 +524,6 @@ local function CreateUI()
     screenGui.Parent = CoreGui
     ScreenGui = screenGui
 
-    -- Botão flutuante de abrir
     local toggleBtn = Instance.new("TextButton")
     toggleBtn.Name = "ToggleBtn"
     toggleBtn.Size = UDim2.new(0, 55, 0, 55)
@@ -514,7 +542,6 @@ local function CreateUI()
     btnCorner.CornerRadius = UDim.new(1, 0)
     btnCorner.Parent = toggleBtn
 
-    -- Janela principal
     local mainFrame = Instance.new("Frame")
     mainFrame.Name = "MainFrame"
     mainFrame.Size = UDim2.new(0, 320, 0, 420)
@@ -531,7 +558,6 @@ local function CreateUI()
     mainCorner.Parent = mainFrame
 
     local titleBar = Instance.new("Frame")
-    titleBar.Name = "TitleBar"
     titleBar.Size = UDim2.new(1, 0, 0, 40)
     titleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
     titleBar.BorderSizePixel = 0
@@ -545,7 +571,7 @@ local function CreateUI()
     titleLabel.Size = UDim2.new(1, -40, 1, 0)
     titleLabel.Position = UDim2.new(0, 10, 0, 0)
     titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = "⚔️ Combat Suite v1.1"
+    titleLabel.Text = "⚔️ Combat Suite v1.2"
     titleLabel.TextColor3 = Color3.new(1, 1, 1)
     titleLabel.TextSize = 15
     titleLabel.Font = Enum.Font.GothamBold
@@ -575,7 +601,6 @@ local function CreateUI()
         mainFrame.Visible = not mainFrame.Visible
     end)
 
-    -- Abas
     local tabContainer = Instance.new("Frame")
     tabContainer.Size = UDim2.new(1, -20, 0, 35)
     tabContainer.Position = UDim2.new(0, 10, 0, 45)
@@ -612,7 +637,6 @@ local function CreateUI()
         tabCorner.Parent = tabBtn
 
         local content = Instance.new("ScrollingFrame")
-        content.Name = name .. "Content"
         content.Size = UDim2.new(1, 0, 1, 0)
         content.BackgroundTransparency = 1
         content.BorderSizePixel = 0
@@ -642,7 +666,6 @@ local function CreateUI()
         return content
     end
 
-    -- Toggle
     local function CreateToggle(parent, text, default, callback)
         local frame = Instance.new("Frame")
         frame.Size = UDim2.new(1, 0, 0, 30)
@@ -700,7 +723,6 @@ local function CreateUI()
         return frame
     end
 
-    -- Slider
     local function CreateSlider(parent, text, min, max, default, callback)
         local frame = Instance.new("Frame")
         frame.Size = UDim2.new(1, 0, 0, 45)
@@ -775,13 +797,11 @@ local function CreateUI()
                 update(input)
             end
         end)
-
         btn.InputChanged:Connect(function(input)
             if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
                 update(input)
             end
         end)
-
         btn.InputEnded:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
                 dragging = false
@@ -791,9 +811,9 @@ local function CreateUI()
         return frame
     end
 
-    -- ============================================================
+    -- =========================================
     -- ABA AIMBOT
-    -- ============================================================
+    -- =========================================
     local aimbotTab = CreateTab("Aimbot")
 
     CreateToggle(aimbotTab, "Ativar Aimbot", Settings.AimbotEnabled, function(v)
@@ -805,9 +825,13 @@ local function CreateUI()
         UpdateFovCircle()
     end)
 
+    CreateToggle(aimbotTab, "Wall Check", Settings.WallCheck, function(v)
+        Settings.WallCheck = v
+    end)
+
     CreateSlider(aimbotTab, "FOV", 10, 500, Settings.FOV, function(v)
         Settings.FOV = v
-        UpdateFovCircle() -- 🔥 atualiza em tempo real
+        UpdateFovCircle()
     end)
 
     CreateSlider(aimbotTab, "Suavidade", 1, 99, math.floor(Settings.Smoothness * 100), function(v)
@@ -822,7 +846,7 @@ local function CreateUI()
         Settings.TeamCheck = v
     end)
 
-    -- Seleção de parte do corpo
+    -- Parte do corpo
     local partFrame = Instance.new("Frame")
     partFrame.Size = UDim2.new(1, 0, 0, 60)
     partFrame.BackgroundTransparency = 1
@@ -877,9 +901,9 @@ local function CreateUI()
         end)
     end
 
-    -- ============================================================
+    -- =========================================
     -- ABA HITBOX
-    -- ============================================================
+    -- =========================================
     local hitboxTab = CreateTab("Hitbox")
 
     CreateToggle(hitboxTab, "Ativar Hitbox", Settings.HitboxEnabled, function(v)
@@ -890,15 +914,14 @@ local function CreateUI()
         Settings.HitboxSize = v
     end)
 
-    -- ============================================================
+    -- =========================================
     -- ABA ESP
-    -- ============================================================
+    -- =========================================
     local espTab = CreateTab("ESP")
 
     CreateToggle(espTab, "Ativar ESP", Settings.ESPEnabled, function(v)
         ToggleESP(v)
     end)
-
     CreateToggle(espTab, "Nome", Settings.ESPName, function(v) Settings.ESPName = v end)
     CreateToggle(espTab, "Distância", Settings.ESPDistance, function(v) Settings.ESPDistance = v end)
     CreateToggle(espTab, "Barra de Vida", Settings.ESPHealth, function(v) Settings.ESPHealth = v end)
@@ -913,22 +936,21 @@ local function CreateUI()
         Settings.ESPTeamCheck = v
     end)
 
-    -- ============================================================
+    -- =========================================
     -- ABA CONFIG
-    -- ============================================================
+    -- =========================================
     local configTab = CreateTab("Config")
 
     local infoLabel = Instance.new("TextLabel")
-    infoLabel.Size = UDim2.new(1, 0, 0, 80)
+    infoLabel.Size = UDim2.new(1, 0, 0, 100)
     infoLabel.BackgroundTransparency = 1
-    infoLabel.Text = "Script Modular v1.1\nAimbot com FOV visual\nMobile-friendly\n\nAtalho (PC): E = toggle Aimbot"
+    infoLabel.Text = "Script v1.2\n• Wall Check ativado\n• FOV rigoroso\n• Círculo visual\n\nAtalho (PC): E = toggle Aimbot"
     infoLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
     infoLabel.TextSize = 11
     infoLabel.Font = Enum.Font.Gotham
     infoLabel.TextWrapped = true
     infoLabel.Parent = configTab
 
-    -- Seleciona aba Aimbot
     if tabs["Aimbot"] then
         tabs["Aimbot"].button:Fire()
     end
@@ -941,8 +963,8 @@ end
 -- ============================================================
 local mainFrame, toggleBtn = CreateUI()
 CreateFovCircle()
+UpdateFovCircle()
 
--- Atalho PC
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if gameProcessed then return end
     if input.KeyCode == Settings.AimbotKey then
@@ -951,9 +973,9 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 end)
 
 StarterGui:SetCore("SendNotification", {
-    Title = "Combat Suite v1.1",
-    Text = "Aimbot e FOV corrigidos!",
+    Title = "Combat Suite v1.2",
+    Text = "Wall Check + FOV rigoroso aplicados!",
     Duration = 3,
 })
 
-print("✅ Combat Suite v1.1 carregado!")
+print("✅ Combat Suite v1.2 carregado!")
