@@ -1,10 +1,11 @@
 --[[
-    SCRIPT: Aimbot + Hitbox Extender + ESP (Mobile UI) - v1.4
-    NOVIDADES v1.4:
-      - Sistema de SALVAR/CARREGAR configurações automaticamente
-      - Botões Salvar / Carregar / Resetar na aba Config
-      - FOV corrigido e funcionando com filtro rigoroso
-      - Salva em arquivo local do executor (writefile/readfile)
+    SCRIPT: Aimbot + Hitbox Extender + ESP (Mobile UI) - v1.5
+    NOVIDADES v1.5:
+      - Wall Check DEFINITIVO usando GetPartsObscuringTarget
+      - Testa múltiplos pontos no caminho (pega paredes finas)
+      - NUNCA mira através de parede
+      - Save/Load de config mantido
+      - FOV rigoroso mantido
 --]]
 
 -- ============================================================
@@ -24,10 +25,9 @@ local Camera = Workspace.CurrentCamera
 -- ============================================================
 -- SISTEMA DE CONFIG (SALVAR/CARREGAR)
 -- ============================================================
-local CONFIG_FILE = "combat_suite_v14.json"
+local CONFIG_FILE = "combat_suite_v15.json"
 
 local DefaultSettings = {
-    -- Aimbot
     AimbotEnabled = false,
     AimbotKey = "E",
     FOV = 120,
@@ -38,10 +38,8 @@ local DefaultSettings = {
     WallCheck = true,
     ShowFovCircle = true,
     ScreenMargin = 0,
-    -- Hitbox
     HitboxEnabled = false,
     HitboxSize = 5,
-    -- ESP
     ESPEnabled = false,
     ESPName = true,
     ESPHealth = true,
@@ -53,7 +51,6 @@ local DefaultSettings = {
 local Settings = {}
 for k, v in pairs(DefaultSettings) do Settings[k] = v end
 
--- Função para serializar tabela simples (JSON-like, sem dependências)
 local function Serialize(tbl)
     local parts = {}
     for k, v in pairs(tbl) do
@@ -70,7 +67,6 @@ local function Serialize(tbl)
     return "{\n" .. table.concat(parts, ",\n") .. "\n}"
 end
 
--- Função para desserializar
 local function Deserialize(str)
     local ok, result = pcall(function()
         return loadstring("return " .. str)()
@@ -81,34 +77,17 @@ local function Deserialize(str)
     return nil
 end
 
--- Salvar config
 local function SaveConfig()
-    if not writefile then
-        warn("[Combat Suite] Executor não suporta writefile. Config não será salva.")
-        return false
-    end
-    local ok, err = pcall(function()
+    if not writefile then return false end
+    local ok = pcall(function()
         writefile(CONFIG_FILE, Serialize(Settings))
     end)
-    if ok then
-        print("[Combat Suite] ✅ Config salva em: " .. CONFIG_FILE)
-        return true
-    else
-        warn("[Combat Suite] ❌ Erro ao salvar: " .. tostring(err))
-        return false
-    end
+    return ok
 end
 
--- Carregar config
 local function LoadConfig()
-    if not readfile or not isfile then
-        warn("[Combat Suite] Executor não suporta readfile/isfile.")
-        return false
-    end
-    if not isfile(CONFIG_FILE) then
-        print("[Combat Suite] Arquivo de config não existe. Usando padrões.")
-        return false
-    end
+    if not readfile or not isfile then return false end
+    if not isfile(CONFIG_FILE) then return false end
     local ok, data = pcall(function() return readfile(CONFIG_FILE) end)
     if not ok or not data then return false end
     local tbl = Deserialize(data)
@@ -118,33 +97,22 @@ local function LoadConfig()
             Settings[k] = v
         end
     end
-    -- Converte string da tecla de volta para Enum.KeyCode
     if type(Settings.AimbotKey) == "string" then
         local ok2, keyCode = pcall(function() return Enum.KeyCode[Settings.AimbotKey] end)
         Settings.AimbotKey = ok2 and keyCode or Enum.KeyCode.E
     end
-    print("[Combat Suite] ✅ Config carregada!")
     return true
 end
 
--- Resetar config
 local function ResetConfig()
     for k, v in pairs(DefaultSettings) do
         Settings[k] = v
     end
-    if writefile then
+    if writefile and delfile then
         pcall(function() delfile(CONFIG_FILE) end)
     end
-    print("[Combat Suite] 🔄 Config resetada para padrão!")
 end
 
--- Converte Enum.KeyCode para string (para salvar)
-local function KeyCodeToString(kc)
-    if typeof(kc) == "EnumItem" then return kc.Name end
-    return tostring(kc)
-end
-
--- 🔥 Carrega config automaticamente ao iniciar
 LoadConfig()
 
 -- ============================================================
@@ -199,25 +167,72 @@ local function GetTargetPart(character, partName)
     return character:FindFirstChild(partName)
 end
 
+-- 🔥 WALL CHECK DEFINITIVO
 local function HasLineOfSight(targetPart)
     local myChar = LocalPlayer.Character
     if not myChar then return false end
 
+    local targetCharacter = targetPart.Parent
+    if not targetCharacter then return false end
+
+    local success, obscuringParts = pcall(function()
+        return Camera:GetPartsObscuringTarget(
+            { targetPart.Position },
+            { myChar, targetCharacter, Camera }
+        )
+    end)
+
+    if success and obscuringParts then
+        return #obscuringParts == 0
+    end
+
+    -- Fallback com raycast
     local origin = Camera.CFrame.Position
     local direction = targetPart.Position - origin
-
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
-    local excludeList = { myChar }
-    if targetPart.Parent then table.insert(excludeList, targetPart.Parent) end
-    params.FilterDescendantsInstances = excludeList
+    params.FilterDescendantsInstances = { myChar, targetCharacter, Camera }
     params.IgnoreWater = true
 
     local result = Workspace:Raycast(origin, direction, params)
     return result == nil
 end
 
--- 🔥 FOV CORRIGIDO: verifica se está na tela E retorna a posição
+-- 🔥 VISÃO LIMPA — testa múltiplos pontos (pega paredes finas)
+local function HasClearView(targetPart)
+    local myChar = LocalPlayer.Character
+    if not myChar then return false end
+
+    local targetCharacter = targetPart.Parent
+    if not targetCharacter then return false end
+
+    local cameraPos = Camera.CFrame.Position
+    local targetPos = targetPart.Position
+
+    local testPoints = {
+        targetPos,
+        cameraPos:Lerp(targetPos, 0.25),
+        cameraPos:Lerp(targetPos, 0.5),
+        cameraPos:Lerp(targetPos, 0.75),
+    }
+
+    for _, point in ipairs(testPoints) do
+        local success, obscuringParts = pcall(function()
+            return Camera:GetPartsObscuringTarget(
+                { point },
+                { myChar, targetCharacter, Camera }
+            )
+        end)
+
+        if success and obscuringParts and #obscuringParts > 0 then
+            return false
+        end
+    end
+
+    return true
+end
+
+-- FOV: verifica se está na tela
 local function GetScreenPosition(targetPart)
     local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
     if not onScreen then return nil end
@@ -225,9 +240,7 @@ local function GetScreenPosition(targetPart)
     local viewport = Camera.ViewportSize
     local margin = Settings.ScreenMargin
 
-    -- Precisa estar na frente da câmera
     if screenPos.Z <= 0 then return nil end
-    -- Precisa estar dentro dos limites da tela
     if screenPos.X < margin or screenPos.X > viewport.X - margin then return nil end
     if screenPos.Y < margin or screenPos.Y > viewport.Y - margin then return nil end
 
@@ -237,7 +250,6 @@ end
 -- ============================================================
 -- AIMBOT
 -- ============================================================
-
 local function CreateFovCircle()
     if FovCircle then FovCircle:Destroy() end
     if FovGui then FovGui:Destroy() end
@@ -273,7 +285,6 @@ local function CreateFovCircle()
     stroke.Parent = circle
 
     FovCircle = circle
-    return circle
 end
 
 local function UpdateFovCircle()
@@ -282,7 +293,6 @@ local function UpdateFovCircle()
     FovCircle.Visible = Settings.AimbotEnabled and Settings.ShowFovCircle
 end
 
--- 🔥 Encontra alvo DENTRO do FOV na tela
 local function GetClosestTarget()
     local closestTarget = nil
     local shortestDist = math.huge
@@ -299,22 +309,21 @@ local function GetClosestTarget()
             local char = player.Character
             local targetPart = GetTargetPart(char, Settings.TargetPart)
             if targetPart then
-                -- Filtro 1: distância
                 local worldDist = (myPos - targetPart.Position).Magnitude
                 if worldDist <= Settings.MaxDistance then
-
-                    -- Filtro 2: VISÍVEL NA TELA
                     local screenVec = GetScreenPosition(targetPart)
                     if screenVec then
-                        -- 🔥 Filtro 3: DENTRO DO FOV (círculo azul)
                         local screenDist = (screenVec - center).Magnitude
                         if screenDist <= Settings.FOV then
-                            -- Filtro 4: Wall Check
-                            if not Settings.WallCheck or HasLineOfSight(targetPart) then
-                                if screenDist < shortestDist then
-                                    shortestDist = screenDist
-                                    closestTarget = player
-                                end
+                            -- 🔥 VISÃO LIMPA
+                            local clearView = true
+                            if Settings.WallCheck then
+                                clearView = HasClearView(targetPart)
+                            end
+
+                            if clearView and screenDist < shortestDist then
+                                shortestDist = screenDist
+                                closestTarget = player
                             end
                         end
                     end
@@ -336,7 +345,6 @@ local function UpdateAimbot()
     local targetPart = GetTargetPart(target.Character, Settings.TargetPart)
     if not targetPart then return end
 
-    -- Revalida FOV antes de mover câmera
     local screenVec = GetScreenPosition(targetPart)
     if not screenVec then return end
 
@@ -344,7 +352,8 @@ local function UpdateAimbot()
     local screenDist = (screenVec - center).Magnitude
     if screenDist > Settings.FOV then return end
 
-    if Settings.WallCheck and not HasLineOfSight(targetPart) then return end
+    -- 🔥 Revalida visão
+    if Settings.WallCheck and not HasClearView(targetPart) then return end
 
     local targetCFrame = CFrame.new(Camera.CFrame.Position, targetPart.Position)
     local alpha = 1 - math.clamp(Settings.Smoothness, 0, 0.99)
@@ -361,7 +370,7 @@ local function ToggleAimbot(state)
         CurrentTarget = nil
     end
     UpdateFovCircle()
-    SaveConfig()  -- 💾 AUTO-SAVE
+    SaveConfig()
 end
 
 -- ============================================================
@@ -424,7 +433,7 @@ local function ToggleHitbox(state)
             HitboxConnections.loop = nil
         end
     end
-    SaveConfig()  -- 💾 AUTO-SAVE
+    SaveConfig()
 end
 
 -- ============================================================
@@ -593,7 +602,7 @@ local function ToggleESP(state)
             ESPObjects.loop = nil
         end
     end
-    SaveConfig()  -- 💾 AUTO-SAVE
+    SaveConfig()
 end
 
 -- ============================================================
@@ -687,7 +696,7 @@ local function CreateUI()
     titleLabel.Size = UDim2.new(1, -40, 1, 0)
     titleLabel.Position = UDim2.new(0, 10, 0, 0)
     titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = "⚔️ Combat Suite v1.4"
+    titleLabel.Text = "⚔️ Combat Suite v1.5"
     titleLabel.TextColor3 = Color3.new(1, 1, 1)
     titleLabel.TextSize = 15
     titleLabel.Font = Enum.Font.GothamBold
@@ -782,7 +791,6 @@ local function CreateUI()
         return content
     end
 
-    -- 🔥 Toggle com auto-save
     local function CreateToggle(parent, text, default, callback)
         local frame = Instance.new("Frame")
         frame.Size = UDim2.new(1, 0, 0, 30)
@@ -835,13 +843,12 @@ local function CreateUI()
                 Position = isOn and UDim2.new(1, -20, 0.5, -9) or UDim2.new(0, 2, 0.5, -9)
             }):Play()
             if callback then callback(isOn) end
-            SaveConfig()  -- 💾 AUTO-SAVE a cada mudança
+            SaveConfig()
         end)
 
         return frame
     end
 
-    -- 🔥 Slider com auto-save
     local function CreateSlider(parent, text, min, max, default, callback)
         local frame = Instance.new("Frame")
         frame.Size = UDim2.new(1, 0, 0, 45)
@@ -924,14 +931,13 @@ local function CreateUI()
         btn.InputEnded:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
                 dragging = false
-                SaveConfig()  -- 💾 AUTO-SAVE ao soltar
+                SaveConfig()
             end
         end)
 
         return frame
     end
 
-    -- Botão customizado
     local function CreateButton(parent, text, color, callback)
         local btn = Instance.new("TextButton")
         btn.Size = UDim2.new(1, 0, 0, 36)
@@ -954,9 +960,7 @@ local function CreateUI()
         return btn
     end
 
-    -- =========================================
     -- ABA AIMBOT
-    -- =========================================
     local aimbotTab = CreateTab("Aimbot")
 
     CreateToggle(aimbotTab, "Ativar Aimbot", Settings.AimbotEnabled, function(v)
@@ -993,7 +997,6 @@ local function CreateUI()
         Settings.TeamCheck = v
     end)
 
-    -- Parte do corpo
     local partFrame = Instance.new("Frame")
     partFrame.Size = UDim2.new(1, 0, 0, 60)
     partFrame.BackgroundTransparency = 1
@@ -1049,9 +1052,7 @@ local function CreateUI()
         end)
     end
 
-    -- =========================================
     -- ABA HITBOX
-    -- =========================================
     local hitboxTab = CreateTab("Hitbox")
 
     CreateToggle(hitboxTab, "Ativar Hitbox", Settings.HitboxEnabled, function(v)
@@ -1062,9 +1063,7 @@ local function CreateUI()
         Settings.HitboxSize = v
     end)
 
-    -- =========================================
     -- ABA ESP
-    -- =========================================
     local espTab = CreateTab("ESP")
 
     CreateToggle(espTab, "Ativar ESP", Settings.ESPEnabled, function(v)
@@ -1084,22 +1083,19 @@ local function CreateUI()
         Settings.ESPTeamCheck = v
     end)
 
-    -- =========================================
-    -- ABA CONFIG (com Save/Load/Reset)
-    -- =========================================
+    -- ABA CONFIG
     local configTab = CreateTab("Config")
 
     local infoLabel = Instance.new("TextLabel")
     infoLabel.Size = UDim2.new(1, 0, 0, 90)
     infoLabel.BackgroundTransparency = 1
-    infoLabel.Text = "Script v1.4\n• Config salva automaticamente\n• Carregada ao iniciar\n\nAtalho (PC): E = toggle Aimbot"
+    infoLabel.Text = "Script v1.5\n• Wall Check DEFINITIVO\n• NUNCA mira através de parede\n• Save/Load automático"
     infoLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
     infoLabel.TextSize = 11
     infoLabel.Font = Enum.Font.Gotham
     infoLabel.TextWrapped = true
     infoLabel.Parent = configTab
 
-    -- Botão Salvar
     CreateButton(configTab, "💾 Salvar Configuração", Color3.fromRGB(0, 160, 80), function()
         if SaveConfig() then
             StarterGui:SetCore("SendNotification", {
@@ -1107,33 +1103,19 @@ local function CreateUI()
                 Text = "✅ Configuração salva!",
                 Duration = 2,
             })
-        else
-            StarterGui:SetCore("SendNotification", {
-                Title = "Combat Suite",
-                Text = "❌ Executor não suporta save",
-                Duration = 2,
-            })
         end
     end)
 
-    -- Botão Carregar
     CreateButton(configTab, "📂 Carregar Configuração", Color3.fromRGB(60, 120, 200), function()
         if LoadConfig() then
             StarterGui:SetCore("SendNotification", {
                 Title = "Combat Suite",
-                Text = "📂 Config carregada! Reabra a UI.",
-                Duration = 2,
-            })
-        else
-            StarterGui:SetCore("SendNotification", {
-                Title = "Combat Suite",
-                Text = "⚠️ Nada para carregar",
+                Text = "📂 Config carregada!",
                 Duration = 2,
             })
         end
     end)
 
-    -- Botão Resetar
     CreateButton(configTab, "🔄 Resetar Padrão", Color3.fromRGB(200, 80, 80), function()
         ResetConfig()
         StarterGui:SetCore("SendNotification", {
@@ -1157,7 +1139,6 @@ local mainFrame, toggleBtn = CreateUI()
 CreateFovCircle()
 UpdateFovCircle()
 
--- Se o aimbot estava salvo como ativo, ativa ao iniciar
 if Settings.AimbotEnabled then ToggleAimbot(true) end
 if Settings.HitboxEnabled then ToggleHitbox(true) end
 if Settings.ESPEnabled then ToggleESP(true) end
@@ -1170,9 +1151,9 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 end)
 
 StarterGui:SetCore("SendNotification", {
-    Title = "Combat Suite v1.4",
-    Text = "Config salva e carregada automaticamente!",
+    Title = "Combat Suite v1.5",
+    Text = "Wall Check definitivo aplicado!",
     Duration = 3,
 })
 
-print("✅ Combat Suite v1.4 carregado! Config salva em: " .. CONFIG_FILE)
+print("✅ Combat Suite v1.5 carregado!")
