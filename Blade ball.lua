@@ -1,10 +1,7 @@
 --[[
-    SCRIPT: Aimbot + Hitbox + ESP (Mobile UI) - v1.6
-    CORREÇÕES v1.6:
-      - FOV Circle agora aparece independente do Aimbot
-      - Fallback: gethui() → CoreGui → PlayerGui
-      - Círculo mais visível (com sombra)
-      - Wall Check definitivo mantido
+    SCRIPT: Blade Ball | Aimbot (Interface Rafild)
+    ESTILO: Idêntico ao print (Rafild UI)
+    FUNÇÕES: Aimbot + FOV + Wall Check + Team Check + Save/Load
 --]]
 
 -- ============================================================
@@ -14,7 +11,6 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
-local CoreGui = game:GetService("CoreGui")
 local Workspace = game:GetService("Workspace")
 local StarterGui = game:GetService("StarterGui")
 
@@ -22,14 +18,14 @@ local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
 -- ============================================================
--- PARENT ROBUSTO PARA UI (gethui → CoreGui → PlayerGui)
+-- PARENT ROBUSTO PARA UI
 -- ============================================================
 local function GetUIParent()
     if gethui then
         local ok, hui = pcall(gethui)
         if ok and hui then return hui end
     end
-    local ok, cg = pcall(function() return CoreGui end)
+    local ok, cg = pcall(function() return game:GetService("CoreGui") end)
     if ok and cg then
         local ok2 = pcall(function()
             local test = Instance.new("Folder")
@@ -44,89 +40,49 @@ end
 -- ============================================================
 -- CONFIG (SALVAR/CARREGAR)
 -- ============================================================
-local CONFIG_FILE = "combat_suite_v16.json"
+local CONFIG_FILE = "rafild_aimbot.json"
 
-local DefaultSettings = {
+local Defaults = {
     AimbotEnabled = false,
-    AimbotKey = "E",
     FOV = 120,
     Smoothness = 0.15,
     TargetPart = "Head",
     TeamCheck = true,
-    MaxDistance = 500,
     WallCheck = true,
     ShowFovCircle = true,
-    ScreenMargin = 0,
-    HitboxEnabled = false,
-    HitboxSize = 5,
-    ESPEnabled = false,
-    ESPName = true,
-    ESPHealth = true,
-    ESPDistance = true,
-    ESPHighlight = true,
-    ESPTeamCheck = true,
+    MaxDistance = 500,
 }
 
 local Settings = {}
-for k, v in pairs(DefaultSettings) do Settings[k] = v end
+for k, v in pairs(Defaults) do Settings[k] = v end
 
-local function Serialize(tbl)
+local function SaveConfig()
+    if not writefile then return end
     local parts = {}
-    for k, v in pairs(tbl) do
+    for k, v in pairs(Settings) do
         local val
         if type(v) == "string" then val = string.format("%q", v)
         elseif type(v) == "boolean" or type(v) == "number" then val = tostring(v)
         else val = "nil" end
         table.insert(parts, string.format("  [%q] = %s", k, val))
     end
-    return "{\n" .. table.concat(parts, ",\n") .. "\n}"
-end
-
-local function Deserialize(str)
-    local ok, result = pcall(function() return loadstring("return " .. str)() end)
-    if ok and type(result) == "table" then return result end
-    return nil
-end
-
-local function SaveConfig()
-    if not writefile then return false end
-    return pcall(function() writefile(CONFIG_FILE, Serialize(Settings)) end)
+    pcall(function() writefile(CONFIG_FILE, "{\n" .. table.concat(parts, ",\n") .. "\n}") end)
 end
 
 local function LoadConfig()
-    if not readfile or not isfile then return false end
-    if not isfile(CONFIG_FILE) then return false end
-    local ok, data = pcall(function() return readfile(CONFIG_FILE) end)
-    if not ok or not data then return false end
-    local tbl = Deserialize(data)
-    if not tbl then return false end
-    for k, v in pairs(tbl) do
-        if DefaultSettings[k] ~= nil then Settings[k] = v end
+    if not readfile or not isfile then return end
+    if not isfile(CONFIG_FILE) then return end
+    local ok, data = pcall(readfile, CONFIG_FILE)
+    if not ok or not data then return end
+    local ok2, tbl = pcall(function() return loadstring("return " .. data)() end)
+    if ok2 and type(tbl) == "table" then
+        for k, v in pairs(tbl) do
+            if Defaults[k] ~= nil then Settings[k] = v end
+        end
     end
-    if type(Settings.AimbotKey) == "string" then
-        local ok2, keyCode = pcall(function() return Enum.KeyCode[Settings.AimbotKey] end)
-        Settings.AimbotKey = ok2 and keyCode or Enum.KeyCode.E
-    end
-    return true
-end
-
-local function ResetConfig()
-    for k, v in pairs(DefaultSettings) do Settings[k] = v end
-    if writefile and delfile then pcall(function() delfile(CONFIG_FILE) end) end
 end
 
 LoadConfig()
-
--- ============================================================
--- ESTADO GLOBAL
--- ============================================================
-local CurrentTarget = nil
-local AimbotBindName = "AimbotRenderStep"
-local HitboxConnections = {}
-local ESPObjects = {}
-local FovCircle = nil
-local FovGui = nil
-local ScreenGui = nil
 
 -- ============================================================
 -- UTILITÁRIOS
@@ -139,173 +95,36 @@ end
 
 local function IsAlive(player)
     if not player or not player.Character then return false end
-    local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
-    return humanoid and humanoid.Health > 0
+    local hum = player.Character:FindFirstChildOfClass("Humanoid")
+    return hum and hum.Health > 0
 end
 
-local function GetDistance(pos1, pos2)
-    return (pos1 - pos2).Magnitude
-end
-
-local function GetTargetPart(character, partName)
-    if not character then return nil end
-    if partName == "Closest" then
-        local closestPart, closestDist = nil, math.huge
-        local center = Camera.ViewportSize / 2
-        for _, part in ipairs(character:GetChildren()) do
-            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-                local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
-                if onScreen then
-                    local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-                    if dist < closestDist then
-                        closestDist = dist
-                        closestPart = part
-                    end
-                end
-            end
-        end
-        return closestPart
-    end
-    return character:FindFirstChild(partName)
-end
-
--- 🔥 WALL CHECK DEFINITIVO
-local function HasLineOfSight(targetPart)
-    local myChar = LocalPlayer.Character
-    if not myChar then return false end
-    local targetCharacter = targetPart.Parent
-    if not targetCharacter then return false end
-
-    local success, obscuringParts = pcall(function()
-        return Camera:GetPartsObscuringTarget(
-            { targetPart.Position },
-            { myChar, targetCharacter, Camera }
-        )
-    end)
-    if success and obscuringParts then return #obscuringParts == 0 end
-
-    local origin = Camera.CFrame.Position
-    local direction = targetPart.Position - origin
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = { myChar, targetCharacter, Camera }
-    params.IgnoreWater = true
-    local result = Workspace:Raycast(origin, direction, params)
-    return result == nil
+local function GetTargetPart(char, name)
+    if not char then return nil end
+    return char:FindFirstChild(name)
 end
 
 local function HasClearView(targetPart)
     local myChar = LocalPlayer.Character
-    if not myChar then return false end
-    local targetCharacter = targetPart.Parent
-    if not targetCharacter then return false end
+    if not myChar or not targetPart.Parent then return false end
 
-    local cameraPos = Camera.CFrame.Position
-    local targetPos = targetPart.Position
-    local testPoints = {
-        targetPos,
-        cameraPos:Lerp(targetPos, 0.25),
-        cameraPos:Lerp(targetPos, 0.5),
-        cameraPos:Lerp(targetPos, 0.75),
-    }
-    for _, point in ipairs(testPoints) do
-        local success, obscuringParts = pcall(function()
-            return Camera:GetPartsObscuringTarget(
-                { point },
-                { myChar, targetCharacter, Camera }
-            )
-        end)
-        if success and obscuringParts and #obscuringParts > 0 then
-            return false
-        end
-    end
+    local success, parts = pcall(function()
+        return Camera:GetPartsObscuringTarget(
+            { targetPart.Position },
+            { myChar, targetPart.Parent, Camera }
+        )
+    end)
+    if success and parts then return #parts == 0 end
     return true
-end
-
-local function GetScreenPosition(targetPart)
-    local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
-    if not onScreen then return nil end
-    local viewport = Camera.ViewportSize
-    local margin = Settings.ScreenMargin
-    if screenPos.Z <= 0 then return nil end
-    if screenPos.X < margin or screenPos.X > viewport.X - margin then return nil end
-    if screenPos.Y < margin or screenPos.Y > viewport.Y - margin then return nil end
-    return Vector2.new(screenPos.X, screenPos.Y)
-end
-
--- ============================================================
--- FOV CIRCLE — CORRIGIDO v1.6
--- ============================================================
-local function CreateFovCircle()
-    if FovCircle then
-        pcall(function() FovCircle:Destroy() end)
-        FovCircle = nil
-    end
-    if FovGui then
-        pcall(function() FovGui:Destroy() end)
-        FovGui = nil
-    end
-
-    -- Cria ScreenGui com fallback robusto
-    FovGui = Instance.new("ScreenGui")
-    FovGui.Name = "FovGui_" .. tostring(math.random(1000, 9999))
-    FovGui.ResetOnSpawn = false
-    FovGui.IgnoreGuiInset = true
-    FovGui.DisplayOrder = 999999
-    FovGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    FovGui.Parent = GetUIParent()
-
-    -- Frame do círculo
-    local circle = Instance.new("Frame")
-    circle.Name = "FovCircle"
-    circle.AnchorPoint = Vector2.new(0.5, 0.5)
-    circle.Position = UDim2.new(0.5, 0, 0.5, 0)
-    circle.Size = UDim2.new(0, Settings.FOV * 2, 0, Settings.FOV * 2)
-    circle.BackgroundTransparency = 1
-    circle.BorderSizePixel = 0
-    circle.ZIndex = 100
-    circle.Visible = Settings.ShowFovCircle   -- 🔥 só depende de "Mostrar FOV"
-    circle.Parent = FovGui
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(1, 0)
-    corner.Parent = circle
-
-    -- Sombra interna (dá destaque)
-    local strokeOuter = Instance.new("UIStroke")
-    strokeOuter.Thickness = 4
-    strokeOuter.Color = Color3.fromRGB(0, 0, 0)
-    strokeOuter.Transparency = 0.6
-    strokeOuter.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    strokeOuter.Parent = circle
-
-    -- Linha principal (azul)
-    local stroke = Instance.new("UIStroke")
-    stroke.Thickness = 2
-    stroke.Color = Color3.fromRGB(0, 200, 255)
-    stroke.Transparency = 0
-    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    stroke.Parent = circle
-
-    FovCircle = circle
-end
-
-local function UpdateFovCircle()
-    if not FovCircle then
-        CreateFovCircle()
-    end
-    if FovCircle then
-        FovCircle.Size = UDim2.new(0, Settings.FOV * 2, 0, Settings.FOV * 2)
-        FovCircle.Visible = Settings.ShowFovCircle   -- 🔥 independente do Aimbot
-    end
 end
 
 -- ============================================================
 -- AIMBOT
 -- ============================================================
+local aimbotBind = "RafildAimbot"
+
 local function GetClosestTarget()
-    local closestTarget = nil
-    local shortestDist = math.huge
+    local closest, shortest = nil, math.huge
     local center = Camera.ViewportSize / 2
     local myChar = LocalPlayer.Character
     if not myChar then return nil end
@@ -313,24 +132,19 @@ local function GetClosestTarget()
     if not myRoot then return nil end
     local myPos = myRoot.Position
 
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and IsAlive(player) and IsEnemy(player) then
-            local char = player.Character
-            local targetPart = GetTargetPart(char, Settings.TargetPart)
-            if targetPart then
-                local worldDist = (myPos - targetPart.Position).Magnitude
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and IsAlive(p) and IsEnemy(p) then
+            local part = GetTargetPart(p.Character, Settings.TargetPart)
+            if part then
+                local worldDist = (myPos - part.Position).Magnitude
                 if worldDist <= Settings.MaxDistance then
-                    local screenVec = GetScreenPosition(targetPart)
-                    if screenVec then
-                        local screenDist = (screenVec - center).Magnitude
-                        if screenDist <= Settings.FOV then
-                            local clearView = true
-                            if Settings.WallCheck then
-                                clearView = HasClearView(targetPart)
-                            end
-                            if clearView and screenDist < shortestDist then
-                                shortestDist = screenDist
-                                closestTarget = player
+                    local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
+                    if onScreen and sp.Z > 0 then
+                        local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                        if d <= Settings.FOV and d < shortest then
+                            if not Settings.WallCheck or HasClearView(part) then
+                                shortest = d
+                                closest = part
                             end
                         end
                     end
@@ -338,743 +152,450 @@ local function GetClosestTarget()
             end
         end
     end
-    return closestTarget
+    return closest
 end
 
 local function UpdateAimbot()
     if not Settings.AimbotEnabled then return end
     local target = GetClosestTarget()
-    CurrentTarget = target
-    if not target or not target.Character then return end
+    if not target then return end
 
-    local targetPart = GetTargetPart(target.Character, Settings.TargetPart)
-    if not targetPart then return end
-
-    local screenVec = GetScreenPosition(targetPart)
-    if not screenVec then return end
-
+    -- Revalida FOV
+    local sp, onScreen = Camera:WorldToViewportPoint(target.Position)
+    if not onScreen or sp.Z <= 0 then return end
     local center = Camera.ViewportSize / 2
-    local screenDist = (screenVec - center).Magnitude
-    if screenDist > Settings.FOV then return end
+    local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+    if d > Settings.FOV then return end
+    if Settings.WallCheck and not HasClearView(target) then return end
 
-    if Settings.WallCheck and not HasClearView(targetPart) then return end
-
-    local targetCFrame = CFrame.new(Camera.CFrame.Position, targetPart.Position)
+    local cf = CFrame.new(Camera.CFrame.Position, target.Position)
     local alpha = 1 - math.clamp(Settings.Smoothness, 0, 0.99)
-    Camera.CFrame = Camera.CFrame:Lerp(targetCFrame, alpha)
+    Camera.CFrame = Camera.CFrame:Lerp(cf, alpha)
 end
 
-local function ToggleAimbot(state)
+local function SetAimbot(state)
     Settings.AimbotEnabled = state
     if state then
-        RunService:UnbindFromRenderStep(AimbotBindName)
-        RunService:BindToRenderStep(AimbotBindName, Enum.RenderPriority.Camera.Value - 1, UpdateAimbot)
+        RunService:UnbindFromRenderStep(aimbotBind)
+        RunService:BindToRenderStep(aimbotBind, Enum.RenderPriority.Camera.Value - 1, UpdateAimbot)
     else
-        RunService:UnbindFromRenderStep(AimbotBindName)
-        CurrentTarget = nil
+        RunService:UnbindFromRenderStep(aimbotBind)
     end
     SaveConfig()
 end
 
 -- ============================================================
--- HITBOX EXTENDER
+-- FOV CIRCLE
 -- ============================================================
-local function ApplyHitbox(player)
-    if player == LocalPlayer then return end
-    if not IsAlive(player) or not IsEnemy(player) then return end
-    for _, part in ipairs(player.Character:GetChildren()) do
-        if part:IsA("BasePart") then
-            if not part:GetAttribute("OriginalSize") then
-                part:SetAttribute("OriginalSize", part.Size)
-            end
-            local originalSize = part:GetAttribute("OriginalSize")
-            if originalSize then
-                part.Size = originalSize + Vector3.new(Settings.HitboxSize, Settings.HitboxSize, Settings.HitboxSize)
-            end
-        end
-    end
+local FovGui, FovCircle
+local function CreateFovCircle()
+    if FovCircle then FovCircle:Destroy() end
+    if FovGui then FovGui:Destroy() end
+
+    FovGui = Instance.new("ScreenGui")
+    FovGui.Name = "FovGui_" .. tostring(math.random(1000, 9999))
+    FovGui.ResetOnSpawn = false
+    FovGui.IgnoreGuiInset = true
+    FovGui.DisplayOrder = 999998
+    FovGui.Parent = GetUIParent()
+
+    local circle = Instance.new("Frame")
+    circle.AnchorPoint = Vector2.new(0.5, 0.5)
+    circle.Position = UDim2.new(0.5, 0, 0.5, 0)
+    circle.Size = UDim2.new(0, Settings.FOV * 2, 0, Settings.FOV * 2)
+    circle.BackgroundTransparency = 1
+    circle.BorderSizePixel = 0
+    circle.Visible = Settings.ShowFovCircle
+    circle.Parent = FovGui
+
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(1, 0)
+    c.Parent = circle
+
+    local s1 = Instance.new("UIStroke")
+    s1.Thickness = 4
+    s1.Color = Color3.fromRGB(0, 0, 0)
+    s1.Transparency = 0.5
+    s1.Parent = circle
+
+    local s2 = Instance.new("UIStroke")
+    s2.Thickness = 2
+    s2.Color = Color3.fromRGB(70, 170, 240)
+    s2.Parent = circle
+
+    FovCircle = circle
 end
 
-local function RestoreHitbox(player)
-    if not player or not player.Character then return end
-    for _, part in ipairs(player.Character:GetChildren()) do
-        if part:IsA("BasePart") then
-            local originalSize = part:GetAttribute("OriginalSize")
-            if originalSize then
-                part.Size = originalSize
-                part:SetAttribute("OriginalSize", nil)
-            end
-        end
+local function UpdateFovCircle()
+    if not FovCircle then CreateFovCircle() end
+    if FovCircle then
+        FovCircle.Size = UDim2.new(0, Settings.FOV * 2, 0, Settings.FOV * 2)
+        FovCircle.Visible = Settings.ShowFovCircle
     end
-end
-
-local function UpdateAllHitboxes()
-    if not Settings.HitboxEnabled then return end
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and IsAlive(player) and IsEnemy(player) then
-            ApplyHitbox(player)
-        end
-    end
-end
-
-local function ToggleHitbox(state)
-    Settings.HitboxEnabled = state
-    if state then
-        UpdateAllHitboxes()
-        if not HitboxConnections.loop then
-            HitboxConnections.loop = RunService.Heartbeat:Connect(function()
-                if Settings.HitboxEnabled then UpdateAllHitboxes() end
-            end)
-        end
-    else
-        for _, player in ipairs(Players:GetPlayers()) do RestoreHitbox(player) end
-        if HitboxConnections.loop then
-            HitboxConnections.loop:Disconnect()
-            HitboxConnections.loop = nil
-        end
-    end
-    SaveConfig()
 end
 
 -- ============================================================
--- ESP
--- ============================================================
-local function DestroyESP(player)
-    local esp = ESPObjects[player]
-    if not esp then return end
-    if esp.Highlight then esp.Highlight:Destroy() end
-    if esp.Billboard then esp.Billboard:Destroy() end
-    ESPObjects[player] = nil
-end
-
-local function CreateESP(player)
-    if player == LocalPlayer then return end
-    if not IsAlive(player) then return end
-    DestroyESP(player)
-
-    local character = player.Character
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    if not humanoid or not rootPart then return end
-
-    local color = IsEnemy(player) and Color3.fromRGB(255, 50, 50) or Color3.fromRGB(50, 255, 50)
-
-    local highlight = nil
-    if Settings.ESPHighlight then
-        highlight = Instance.new("Highlight")
-        highlight.Adornee = character
-        highlight.FillColor = color
-        highlight.OutlineColor = Color3.new(1, 1, 1)
-        highlight.FillTransparency = 0.5
-        highlight.OutlineTransparency = 0
-        highlight.Parent = character
-    end
-
-    local billboard = Instance.new("BillboardGui")
-    billboard.Adornee = rootPart
-    billboard.Size = UDim2.new(0, 200, 0, 100)
-    billboard.StudsOffset = Vector3.new(0, 3, 0)
-    billboard.AlwaysOnTop = true
-    billboard.Parent = character
-
-    local nameLabel = Instance.new("TextLabel")
-    nameLabel.Size = UDim2.new(1, 0, 0.3, 0)
-    nameLabel.BackgroundTransparency = 1
-    nameLabel.Text = player.DisplayName or player.Name
-    nameLabel.TextColor3 = color
-    nameLabel.TextStrokeTransparency = 0
-    nameLabel.TextSize = 14
-    nameLabel.Font = Enum.Font.GothamBold
-    nameLabel.Visible = Settings.ESPName
-    nameLabel.Parent = billboard
-
-    local distLabel = Instance.new("TextLabel")
-    distLabel.Size = UDim2.new(1, 0, 0.2, 0)
-    distLabel.Position = UDim2.new(0, 0, 0.3, 0)
-    distLabel.BackgroundTransparency = 1
-    distLabel.Text = "0m"
-    distLabel.TextColor3 = Color3.new(1, 1, 1)
-    distLabel.TextStrokeTransparency = 0
-    distLabel.TextSize = 12
-    distLabel.Font = Enum.Font.Gotham
-    distLabel.Visible = Settings.ESPDistance
-    distLabel.Parent = billboard
-
-    local healthBarBg = Instance.new("Frame")
-    healthBarBg.Size = UDim2.new(0.8, 0, 0.08, 0)
-    healthBarBg.Position = UDim2.new(0.1, 0, 0.5, 0)
-    healthBarBg.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-    healthBarBg.BorderSizePixel = 0
-    healthBarBg.Visible = Settings.ESPHealth
-    healthBarBg.Parent = billboard
-
-    local healthBar = Instance.new("Frame")
-    healthBar.Size = UDim2.new(1, 0, 1, 0)
-    healthBar.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
-    healthBar.BorderSizePixel = 0
-    healthBar.Parent = healthBarBg
-
-    ESPObjects[player] = {
-        Highlight = highlight, Billboard = billboard,
-        NameLabel = nameLabel, DistanceLabel = distLabel,
-        HealthBar = healthBar, HealthBg = healthBarBg,
-    }
-end
-
-local function UpdateESP()
-    for player, esp in pairs(ESPObjects) do
-        if not player or not player.Parent or not player.Character then
-            DestroyESP(player)
-            continue
-        end
-        local character = player.Character
-        local humanoid = character:FindFirstChildOfClass("Humanoid")
-        local rootPart = character:FindFirstChild("HumanoidRootPart")
-        if not humanoid or not rootPart or humanoid.Health <= 0 then
-            DestroyESP(player)
-            continue
-        end
-        local color = IsEnemy(player) and Color3.fromRGB(255, 50, 50) or Color3.fromRGB(50, 255, 50)
-        if esp.Highlight then esp.Highlight.FillColor = color end
-        if esp.NameLabel then
-            esp.NameLabel.TextColor3 = color
-            esp.NameLabel.Visible = Settings.ESPName
-        end
-        if esp.DistanceLabel then
-            local myChar = LocalPlayer.Character
-            if myChar and myChar:FindFirstChild("HumanoidRootPart") then
-                local d = GetDistance(myChar.HumanoidRootPart.Position, rootPart.Position)
-                esp.DistanceLabel.Text = string.format("%.0fm", d)
-            end
-            esp.DistanceLabel.Visible = Settings.ESPDistance
-        end
-        if esp.HealthBg then esp.HealthBg.Visible = Settings.ESPHealth end
-        if esp.HealthBar then
-            local hp = humanoid.Health / math.max(humanoid.MaxHealth, 1)
-            esp.HealthBar.Size = UDim2.new(hp, 0, 1, 0)
-            if hp > 0.5 then esp.HealthBar.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
-            elseif hp > 0.25 then esp.HealthBar.BackgroundColor3 = Color3.fromRGB(255, 255, 0)
-            else esp.HealthBar.BackgroundColor3 = Color3.fromRGB(255, 0, 0) end
-        end
-    end
-end
-
-local function ToggleESP(state)
-    Settings.ESPEnabled = state
-    if state then
-        for _, player in ipairs(Players:GetPlayers()) do
-            if player ~= LocalPlayer then CreateESP(player) end
-        end
-        if not ESPObjects.loop then
-            local lastUpdate = 0
-            ESPObjects.loop = RunService.Heartbeat:Connect(function(dt)
-                if not Settings.ESPEnabled then return end
-                lastUpdate = lastUpdate + dt
-                if lastUpdate >= 0.1 then
-                    lastUpdate = 0
-                    UpdateESP()
-                end
-            end)
-        end
-    else
-        for player, _ in pairs(ESPObjects) do DestroyESP(player) end
-        if ESPObjects.loop then
-            ESPObjects.loop:Disconnect()
-            ESPObjects.loop = nil
-        end
-    end
-    SaveConfig()
-end
-
--- ============================================================
--- CICLO DE VIDA
--- ============================================================
-local function OnCharacterAdded(player, character)
-    task.wait(0.5)
-    if Settings.HitboxEnabled and IsEnemy(player) then ApplyHitbox(player) end
-    if Settings.ESPEnabled then CreateESP(player) end
-end
-
-for _, player in ipairs(Players:GetPlayers()) do
-    if player ~= LocalPlayer then
-        player.CharacterAdded:Connect(function(c) OnCharacterAdded(player, c) end)
-        player.CharacterRemoving:Connect(function()
-            DestroyESP(player); RestoreHitbox(player)
-        end)
-    end
-end
-
-Players.PlayerAdded:Connect(function(player)
-    player.CharacterAdded:Connect(function(c) OnCharacterAdded(player, c) end)
-    player.CharacterRemoving:Connect(function()
-        DestroyESP(player); RestoreHitbox(player)
-    end)
-end)
-
-Players.PlayerRemoving:Connect(function(player)
-    DestroyESP(player); RestoreHitbox(player)
-end)
-
--- ============================================================
--- UI
+-- INTERFACE (ESTILO RAFILD — IGUAL AO PRINT)
 -- ============================================================
 local function CreateUI()
     local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "MobileCombatUI_" .. tostring(math.random(1000, 9999))
+    screenGui.Name = "RafildUI_" .. tostring(math.random(1000, 9999))
     screenGui.ResetOnSpawn = false
-    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     screenGui.IgnoreGuiInset = true
+    screenGui.DisplayOrder = 999999
     screenGui.Parent = GetUIParent()
-    ScreenGui = screenGui
 
-    local toggleBtn = Instance.new("TextButton")
-    toggleBtn.Size = UDim2.new(0, 55, 0, 55)
-    toggleBtn.Position = UDim2.new(0, 20, 0.5, -27)
-    toggleBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
-    toggleBtn.BorderSizePixel = 0
-    toggleBtn.Text = "⚙"
-    toggleBtn.TextColor3 = Color3.new(1, 1, 1)
-    toggleBtn.TextSize = 26
-    toggleBtn.Font = Enum.Font.GothamBold
-    toggleBtn.Active = true
-    toggleBtn.Draggable = true
-    toggleBtn.Parent = screenGui
+    -- Botão flutuante
+    local openBtn = Instance.new("TextButton")
+    openBtn.Size = UDim2.new(0, 55, 0, 55)
+    openBtn.Position = UDim2.new(0, 20, 0.5, -27)
+    openBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    openBtn.BorderSizePixel = 0
+    openBtn.Text = "⚙"
+    openBtn.TextColor3 = Color3.new(1, 1, 1)
+    openBtn.TextSize = 26
+    openBtn.Font = Enum.Font.GothamBold
+    openBtn.Active = true
+    openBtn.Draggable = true
+    openBtn.Parent = screenGui
 
-    local btnCorner = Instance.new("UICorner")
-    btnCorner.CornerRadius = UDim.new(1, 0)
-    btnCorner.Parent = toggleBtn
+    local oc = Instance.new("UICorner")
+    oc.CornerRadius = UDim.new(1, 0)
+    oc.Parent = openBtn
 
-    local mainFrame = Instance.new("Frame")
-    mainFrame.Size = UDim2.new(0, 320, 0, 440)
-    mainFrame.Position = UDim2.new(0.5, -160, 0.5, -220)
-    mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
-    mainFrame.BorderSizePixel = 0
-    mainFrame.Active = true
-    mainFrame.Draggable = true
-    mainFrame.Visible = false
-    mainFrame.Parent = screenGui
+    -- ==================== JANELA ====================
+    local main = Instance.new("Frame")
+    main.Name = "MainFrame"
+    main.Size = UDim2.new(0, 620, 0, 560)
+    main.Position = UDim2.new(0.5, -310, 0.5, -280)
+    main.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+    main.BorderSizePixel = 0
+    main.Active = true
+    main.Draggable = true
+    main.Parent = screenGui
 
-    local mainCorner = Instance.new("UICorner")
-    mainCorner.CornerRadius = UDim.new(0, 12)
-    mainCorner.Parent = mainFrame
+    local mc = Instance.new("UICorner")
+    mc.CornerRadius = UDim.new(0, 16)
+    mc.Parent = main
 
-    local titleBar = Instance.new("Frame")
-    titleBar.Size = UDim2.new(1, 0, 0, 40)
-    titleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
-    titleBar.BorderSizePixel = 0
-    titleBar.Parent = mainFrame
+    local mStroke = Instance.new("UIStroke")
+    mStroke.Color = Color3.fromRGB(70, 70, 70)
+    mStroke.Thickness = 1
+    mStroke.Parent = main
 
-    local titleCorner = Instance.new("UICorner")
-    titleCorner.CornerRadius = UDim.new(0, 12)
-    titleCorner.Parent = titleBar
-
-    local titleLabel = Instance.new("TextLabel")
-    titleLabel.Size = UDim2.new(1, -40, 1, 0)
-    titleLabel.Position = UDim2.new(0, 10, 0, 0)
-    titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = "⚔️ Combat Suite v1.6"
-    titleLabel.TextColor3 = Color3.new(1, 1, 1)
-    titleLabel.TextSize = 15
-    titleLabel.Font = Enum.Font.GothamBold
-    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-    titleLabel.Parent = titleBar
+    -- Título
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -80, 0, 40)
+    title.Position = UDim2.new(0, 20, 0, 15)
+    title.BackgroundTransparency = 1
+    title.Text = "Blade Ball | Aimbot"
+    title.TextColor3 = Color3.new(1, 1, 1)
+    title.TextSize = 22
+    title.Font = Enum.Font.GothamMedium
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = main
 
     local closeBtn = Instance.new("TextButton")
     closeBtn.Size = UDim2.new(0, 30, 0, 30)
-    closeBtn.Position = UDim2.new(1, -35, 0, 5)
-    closeBtn.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+    closeBtn.Position = UDim2.new(1, -45, 0, 20)
+    closeBtn.BackgroundColor3 = Color3.fromRGB(255, 70, 70)
     closeBtn.Text = "✕"
     closeBtn.TextColor3 = Color3.new(1, 1, 1)
     closeBtn.TextSize = 14
     closeBtn.Font = Enum.Font.GothamBold
     closeBtn.BorderSizePixel = 0
-    closeBtn.Parent = titleBar
+    closeBtn.Parent = main
 
-    local closeCorner = Instance.new("UICorner")
-    closeCorner.CornerRadius = UDim.new(1, 0)
-    closeCorner.Parent = closeBtn
+    local cc = Instance.new("UICorner")
+    cc.CornerRadius = UDim.new(1, 0)
+    cc.Parent = closeBtn
 
-    closeBtn.MouseButton1Click:Connect(function() mainFrame.Visible = false end)
-    toggleBtn.MouseButton1Click:Connect(function() mainFrame.Visible = not mainFrame.Visible end)
+    closeBtn.MouseButton1Click:Connect(function() main.Visible = false end)
+    openBtn.MouseButton1Click:Connect(function() main.Visible = not main.Visible end)
 
-    local tabContainer = Instance.new("Frame")
-    tabContainer.Size = UDim2.new(1, -20, 0, 35)
-    tabContainer.Position = UDim2.new(0, 10, 0, 45)
-    tabContainer.BackgroundTransparency = 1
-    tabContainer.Parent = mainFrame
+    -- Aba selecionada (estilo print)
+    local tabBtn = Instance.new("TextButton")
+    tabBtn.Size = UDim2.new(0, 220, 0, 45)
+    tabBtn.Position = UDim2.new(0, 20, 0, 70)
+    tabBtn.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+    tabBtn.Text = ""
+    tabBtn.BorderSizePixel = 0
+    tabBtn.Parent = main
 
-    local tabLayout = Instance.new("UIListLayout")
-    tabLayout.FillDirection = Enum.FillDirection.Horizontal
-    tabLayout.Padding = UDim.new(0, 5)
-    tabLayout.Parent = tabContainer
+    local tbc = Instance.new("UICorner")
+    tbc.CornerRadius = UDim.new(0, 10)
+    tbc.Parent = tabBtn
 
-    local contentFrame = Instance.new("Frame")
-    contentFrame.Size = UDim2.new(1, -20, 1, -90)
-    contentFrame.Position = UDim2.new(0, 10, 0, 85)
-    contentFrame.BackgroundTransparency = 1
-    contentFrame.ClipsDescendants = true
-    contentFrame.Parent = mainFrame
+    local icon = Instance.new("Frame")
+    icon.Size = UDim2.new(0, 22, 0, 22)
+    icon.Position = UDim2.new(0, 15, 0.5, -11)
+    icon.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+    icon.BorderSizePixel = 0
+    icon.Parent = tabBtn
 
-    local tabs = {}
+    local ic = Instance.new("UICorner")
+    ic.CornerRadius = UDim.new(0, 4)
+    ic.Parent = icon
 
-    local function CreateTab(name)
-        local tabBtn = Instance.new("TextButton")
-        tabBtn.Size = UDim2.new(0, 72, 1, 0)
-        tabBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-        tabBtn.Text = name
-        tabBtn.TextColor3 = Color3.fromRGB(180, 180, 180)
-        tabBtn.TextSize = 12
-        tabBtn.Font = Enum.Font.Gotham
-        tabBtn.BorderSizePixel = 0
-        tabBtn.Parent = tabContainer
+    local iconStroke = Instance.new("UIStroke")
+    iconStroke.Color = Color3.new(1, 1, 1)
+    iconStroke.Thickness = 2
+    iconStroke.Parent = icon
 
-        local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = tabBtn
+    local tabText = Instance.new("TextLabel")
+    tabText.Size = UDim2.new(1, -50, 1, 0)
+    tabText.Position = UDim2.new(0, 45, 0, 0)
+    tabText.BackgroundTransparency = 1
+    tabText.Text = "Aimbot"
+    tabText.TextColor3 = Color3.new(1, 1, 1)
+    tabText.TextSize = 16
+    tabText.Font = Enum.Font.GothamMedium
+    tabText.TextXAlignment = Enum.TextXAlignment.Left
+    tabText.Parent = tabBtn
 
-        local content = Instance.new("ScrollingFrame")
-        content.Size = UDim2.new(1, 0, 1, 0)
-        content.BackgroundTransparency = 1
-        content.BorderSizePixel = 0
-        content.ScrollBarThickness = 4
-        content.CanvasSize = UDim2.new(0, 0, 0, 0)
-        content.AutomaticCanvasSize = Enum.AutomaticSize.Y
-        content.Visible = false
-        content.Parent = contentFrame
+    -- ==================== SEÇÃO: Controles ====================
+    local sectionLabel1 = Instance.new("TextLabel")
+    sectionLabel1.Size = UDim2.new(1, -40, 0, 25)
+    sectionLabel1.Position = UDim2.new(0, 25, 0, 125)
+    sectionLabel1.BackgroundTransparency = 1
+    sectionLabel1.Text = "Controles"
+    sectionLabel1.TextColor3 = Color3.fromRGB(170, 170, 170)
+    sectionLabel1.TextSize = 15
+    sectionLabel1.Font = Enum.Font.Gotham
+    sectionLabel1.TextXAlignment = Enum.TextXAlignment.Left
+    sectionLabel1.Parent = main
 
-        local layout = Instance.new("UIListLayout")
-        layout.Padding = UDim.new(0, 8)
-        layout.Parent = content
+    -- Função para criar linha de toggle (estilo print)
+    local function CreateControlRow(yPos, text, default, callback)
+        local row = Instance.new("Frame")
+        row.Size = UDim2.new(1, -40, 0, 55)
+        row.Position = UDim2.new(0, 20, 0, yPos)
+        row.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+        row.BorderSizePixel = 0
+        row.Parent = main
 
-        tabs[name] = { button = tabBtn, content = content }
+        local rc = Instance.new("UICorner")
+        rc.CornerRadius = UDim.new(0, 10)
+        rc.Parent = row
 
-        tabBtn.MouseButton1Click:Connect(function()
-            for _, tab in pairs(tabs) do
-                tab.content.Visible = false
-                tab.button.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-                tab.button.TextColor3 = Color3.fromRGB(180, 180, 180)
-            end
-            content.Visible = true
-            tabBtn.BackgroundColor3 = Color3.fromRGB(70, 70, 100)
-            tabBtn.TextColor3 = Color3.new(1, 1, 1)
-        end)
+        local rStroke = Instance.new("UIStroke")
+        rStroke.Color = Color3.fromRGB(80, 80, 80)
+        rStroke.Thickness = 1
+        rStroke.Parent = row
 
-        return content
-    end
+        local lbl = Instance.new("TextLabel")
+        lbl.Size = UDim2.new(0.6, 0, 1, 0)
+        lbl.Position = UDim2.new(0, 20, 0, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = text
+        lbl.TextColor3 = Color3.new(1, 1, 1)
+        lbl.TextSize = 16
+        lbl.Font = Enum.Font.Gotham
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.Parent = row
 
-    local function CreateToggle(parent, text, default, callback)
-        local frame = Instance.new("Frame")
-        frame.Size = UDim2.new(1, 0, 0, 30)
-        frame.BackgroundTransparency = 1
-        frame.Parent = parent
+        -- Toggle azul (estilo print)
+        local tBg = Instance.new("Frame")
+        tBg.Size = UDim2.new(0, 60, 0, 32)
+        tBg.Position = UDim2.new(1, -80, 0.5, -16)
+        tBg.BackgroundColor3 = default and Color3.fromRGB(70, 170, 240) or Color3.fromRGB(70, 70, 70)
+        tBg.BorderSizePixel = 0
+        tBg.Parent = row
 
-        local label = Instance.new("TextLabel")
-        label.Size = UDim2.new(0.7, 0, 1, 0)
-        label.BackgroundTransparency = 1
-        label.Text = text
-        label.TextColor3 = Color3.fromRGB(200, 200, 200)
-        label.TextSize = 13
-        label.Font = Enum.Font.Gotham
-        label.TextXAlignment = Enum.TextXAlignment.Left
-        label.Parent = frame
+        local tBgC = Instance.new("UICorner")
+        tBgC.CornerRadius = UDim.new(1, 0)
+        tBgC.Parent = tBg
 
-        local toggleBg = Instance.new("Frame")
-        toggleBg.Size = UDim2.new(0, 42, 0, 22)
-        toggleBg.Position = UDim2.new(1, -42, 0.5, -11)
-        toggleBg.BackgroundColor3 = default and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(60, 60, 70)
-        toggleBg.BorderSizePixel = 0
-        toggleBg.Parent = frame
-
-        local bgCorner = Instance.new("UICorner"); bgCorner.CornerRadius = UDim.new(1, 0); bgCorner.Parent = toggleBg
+        local tStroke = Instance.new("UIStroke")
+        tStroke.Color = Color3.fromRGB(90, 90, 90)
+        tStroke.Thickness = 1.5
+        tStroke.Parent = tBg
 
         local knob = Instance.new("Frame")
-        knob.Size = UDim2.new(0, 18, 0, 18)
-        knob.Position = default and UDim2.new(1, -20, 0.5, -9) or UDim2.new(0, 2, 0.5, -9)
+        knob.Size = UDim2.new(0, 26, 0, 26)
+        knob.Position = default and UDim2.new(1, -29, 0.5, -13) or UDim2.new(0, 3, 0.5, -13)
         knob.BackgroundColor3 = Color3.new(1, 1, 1)
         knob.BorderSizePixel = 0
-        knob.Parent = toggleBg
+        knob.Parent = tBg
 
-        local knobCorner = Instance.new("UICorner"); knobCorner.CornerRadius = UDim.new(1, 0); knobCorner.Parent = knob
+        local knobC = Instance.new("UICorner")
+        knobC.CornerRadius = UDim.new(1, 0)
+        knobC.Parent = knob
 
         local isOn = default
         local btn = Instance.new("TextButton")
         btn.Size = UDim2.new(1, 0, 1, 0)
         btn.BackgroundTransparency = 1
         btn.Text = ""
-        btn.Parent = toggleBg
+        btn.Parent = tBg
 
         btn.MouseButton1Click:Connect(function()
             isOn = not isOn
-            toggleBg.BackgroundColor3 = isOn and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(60, 60, 70)
-            TweenService:Create(knob, TweenInfo.new(0.2), {
-                Position = isOn and UDim2.new(1, -20, 0.5, -9) or UDim2.new(0, 2, 0.5, -9)
+            tBg.BackgroundColor3 = isOn and Color3.fromRGB(70, 170, 240) or Color3.fromRGB(70, 70, 70)
+            TweenService:Create(knob, TweenInfo.new(0.2, Enum.EasingStyle.Quad), {
+                Position = isOn and UDim2.new(1, -29, 0.5, -13) or UDim2.new(0, 3, 0.5, -13)
             }):Play()
             if callback then callback(isOn) end
-            SaveConfig()
         end)
 
-        return frame
+        return row
     end
 
-    local function CreateSlider(parent, text, min, max, default, callback)
-        local frame = Instance.new("Frame")
-        frame.Size = UDim2.new(1, 0, 0, 45)
-        frame.BackgroundTransparency = 1
-        frame.Parent = parent
-
-        local label = Instance.new("TextLabel")
-        label.Size = UDim2.new(1, 0, 0, 18)
-        label.BackgroundTransparency = 1
-        label.Text = text .. ": " .. default
-        label.TextColor3 = Color3.fromRGB(200, 200, 200)
-        label.TextSize = 12
-        label.Font = Enum.Font.Gotham
-        label.TextXAlignment = Enum.TextXAlignment.Left
-        label.Parent = frame
-
-        local sliderBg = Instance.new("Frame")
-        sliderBg.Size = UDim2.new(1, -10, 0, 10)
-        sliderBg.Position = UDim2.new(0, 5, 0, 28)
-        sliderBg.BackgroundColor3 = Color3.fromRGB(50, 50, 65)
-        sliderBg.BorderSizePixel = 0
-        sliderBg.Parent = frame
-
-        local sliderCorner = Instance.new("UICorner"); sliderCorner.CornerRadius = UDim.new(1, 0); sliderCorner.Parent = sliderBg
-
-        local initPct = math.clamp((default - min) / (max - min), 0, 1)
-
-        local fill = Instance.new("Frame")
-        fill.Size = UDim2.new(initPct, 0, 1, 0)
-        fill.BackgroundColor3 = Color3.fromRGB(80, 140, 255)
-        fill.BorderSizePixel = 0
-        fill.Parent = sliderBg
-
-        local fillCorner = Instance.new("UICorner"); fillCorner.CornerRadius = UDim.new(1, 0); fillCorner.Parent = fill
-
-        local knob = Instance.new("Frame")
-        knob.Size = UDim2.new(0, 16, 0, 16)
-        knob.Position = UDim2.new(initPct, -8, 0.5, -8)
-        knob.BackgroundColor3 = Color3.new(1, 1, 1)
-        knob.BorderSizePixel = 0
-        knob.ZIndex = 2
-        knob.Parent = sliderBg
-
-        local knobCorner = Instance.new("UICorner"); knobCorner.CornerRadius = UDim.new(1, 0); knobCorner.Parent = knob
-
-        local dragging = false
-
-        local function update(input)
-            local pos = math.clamp((input.Position.X - sliderBg.AbsolutePosition.X) / sliderBg.AbsoluteSize.X, 0, 1)
-            local value = math.floor(min + (max - min) * pos + 0.5)
-            fill.Size = UDim2.new(pos, 0, 1, 0)
-            knob.Position = UDim2.new(pos, -8, 0.5, -8)
-            label.Text = text .. ": " .. value
-            if callback then callback(value) end
-        end
-
-        local btn = Instance.new("TextButton")
-        btn.Size = UDim2.new(1, 0, 1, 0)
-        btn.BackgroundTransparency = 1
-        btn.Text = ""
-        btn.Parent = sliderBg
-
-        btn.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                dragging = true; update(input)
-            end
-        end)
-        btn.InputChanged:Connect(function(input)
-            if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-                update(input)
-            end
-        end)
-        btn.InputEnded:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                dragging = false; SaveConfig()
-            end
-        end)
-
-        return frame
-    end
-
-    local function CreateButton(parent, text, color, callback)
-        local btn = Instance.new("TextButton")
-        btn.Size = UDim2.new(1, 0, 0, 36)
-        btn.BackgroundColor3 = color
-        btn.Text = text
-        btn.TextColor3 = Color3.new(1, 1, 1)
-        btn.TextSize = 13
-        btn.Font = Enum.Font.GothamBold
-        btn.BorderSizePixel = 0
-        btn.Parent = parent
-
-        local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = btn
-
-        btn.MouseButton1Click:Connect(function()
-            if callback then callback() end
-        end)
-        return btn
-    end
-
-    -- ABA AIMBOT
-    local aimbotTab = CreateTab("Aimbot")
-
-    CreateToggle(aimbotTab, "Ativar Aimbot", Settings.AimbotEnabled, function(v)
-        ToggleAimbot(v)
+    CreateControlRow(160, "Aimbot", Settings.AimbotEnabled, function(v)
+        SetAimbot(v)
     end)
 
-    CreateToggle(aimbotTab, "Mostrar FOV", Settings.ShowFovCircle, function(v)
+    CreateControlRow(225, "Team Check", Settings.TeamCheck, function(v)
+        Settings.TeamCheck = v
+        SaveConfig()
+    end)
+
+    CreateControlRow(290, "Wall Check", Settings.WallCheck, function(v)
+        Settings.WallCheck = v
+        SaveConfig()
+    end)
+
+    CreateControlRow(355, "Mostrar FOV", Settings.ShowFovCircle, function(v)
         Settings.ShowFovCircle = v
         UpdateFovCircle()
+        SaveConfig()
     end)
 
-    CreateToggle(aimbotTab, "Wall Check", Settings.WallCheck, function(v)
-        Settings.WallCheck = v
-    end)
+    -- ==================== SEÇÃO: Detecção ====================
+    local sectionLabel2 = Instance.new("TextLabel")
+    sectionLabel2.Size = UDim2.new(1, -40, 0, 25)
+    sectionLabel2.Position = UDim2.new(0, 25, 0, 430)
+    sectionLabel2.BackgroundTransparency = 1
+    sectionLabel2.Text = "Detecção"
+    sectionLabel2.TextColor3 = Color3.fromRGB(170, 170, 170)
+    sectionLabel2.TextSize = 15
+    sectionLabel2.Font = Enum.Font.Gotham
+    sectionLabel2.TextXAlignment = Enum.TextXAlignment.Left
+    sectionLabel2.Parent = main
 
-    CreateSlider(aimbotTab, "FOV", 10, 500, Settings.FOV, function(v)
-        Settings.FOV = v
+    -- ==================== Slider FOV (estilo badge azul) ====================
+    local sliderRow = Instance.new("Frame")
+    sliderRow.Size = UDim2.new(1, -40, 0, 90)
+    sliderRow.Position = UDim2.new(0, 20, 0, 465)
+    sliderRow.BackgroundColor3 = Color3.fromRGB(55, 55, 55)
+    sliderRow.BorderSizePixel = 0
+    sliderRow.Parent = main
+
+    local src = Instance.new("UICorner")
+    src.CornerRadius = UDim.new(0, 10)
+    src.Parent = sliderRow
+
+    local srStroke = Instance.new("UIStroke")
+    srStroke.Color = Color3.fromRGB(80, 80, 80)
+    srStroke.Thickness = 1
+    srStroke.Parent = sliderRow
+
+    local sliderLbl = Instance.new("TextLabel")
+    sliderLbl.Size = UDim2.new(1, -20, 0, 30)
+    sliderLbl.Position = UDim2.new(0, 20, 0, 5)
+    sliderLbl.BackgroundTransparency = 1
+    sliderLbl.Text = "Tamanho do FOV"
+    sliderLbl.TextColor3 = Color3.new(1, 1, 1)
+    sliderLbl.TextSize = 16
+    sliderLbl.Font = Enum.Font.Gotham
+    sliderLbl.TextXAlignment = Enum.TextXAlignment.Left
+    sliderLbl.Parent = sliderRow
+
+    -- Badge azul (valor)
+    local valueBadge = Instance.new("Frame")
+    valueBadge.Size = UDim2.new(0, 130, 0, 38)
+    valueBadge.Position = UDim2.new(1, -145, 0, 20)
+    valueBadge.BackgroundColor3 = Color3.fromRGB(70, 170, 240)
+    valueBadge.BorderSizePixel = 0
+    valueBadge.Parent = sliderRow
+
+    local vbc = Instance.new("UICorner")
+    vbc.CornerRadius = UDim.new(1, 0)
+    vbc.Parent = valueBadge
+
+    local valueText = Instance.new("TextLabel")
+    valueText.Size = UDim2.new(1, 0, 1, 0)
+    valueText.BackgroundTransparency = 1
+    valueText.Text = Settings.FOV .. " px"
+    valueText.TextColor3 = Color3.new(1, 1, 1)
+    valueText.TextSize = 15
+    valueText.Font = Enum.Font.GothamMedium
+    valueText.Parent = valueBadge
+
+    -- Barra do slider
+    local trackBg = Instance.new("Frame")
+    trackBg.Size = UDim2.new(1, -40, 0, 8)
+    trackBg.Position = UDim2.new(0, 20, 1, -18)
+    trackBg.BackgroundColor3 = Color3.fromRGB(80, 80, 80)
+    trackBg.BorderSizePixel = 0
+    trackBg.Parent = sliderRow
+
+    local tbgC = Instance.new("UICorner")
+    tbgC.CornerRadius = UDim.new(1, 0)
+    tbgC.Parent = trackBg
+
+    local trackFill = Instance.new("Frame")
+    trackFill.Size = UDim2.new((Settings.FOV - 10) / 490, 0, 1, 0)
+    trackFill.BackgroundColor3 = Color3.fromRGB(70, 170, 240)
+    trackFill.BorderSizePixel = 0
+    trackFill.Parent = trackBg
+
+    local tfc = Instance.new("UICorner")
+    tfc.CornerRadius = UDim.new(1, 0)
+    tfc.Parent = trackFill
+
+    local dragging = false
+    local function updateSlider(input)
+        local pos = math.clamp((input.Position.X - trackBg.AbsolutePosition.X) / trackBg.AbsoluteSize.X, 0, 1)
+        local val = math.floor(10 + 490 * pos + 0.5)
+        trackFill.Size = UDim2.new(pos, 0, 1, 0)
+        valueText.Text = val .. " px"
+        Settings.FOV = val
         UpdateFovCircle()
-    end)
-
-    CreateSlider(aimbotTab, "Suavidade", 1, 99, math.floor(Settings.Smoothness * 100), function(v)
-        Settings.Smoothness = v / 100
-    end)
-
-    CreateSlider(aimbotTab, "Distância Máx.", 50, 2000, Settings.MaxDistance, function(v)
-        Settings.MaxDistance = v
-    end)
-
-    CreateSlider(aimbotTab, "Margem da Tela", 0, 200, Settings.ScreenMargin, function(v)
-        Settings.ScreenMargin = v
-    end)
-
-    CreateToggle(aimbotTab, "Team Check", Settings.TeamCheck, function(v)
-        Settings.TeamCheck = v
-    end)
-
-    -- Parte Alvo
-    local partFrame = Instance.new("Frame")
-    partFrame.Size = UDim2.new(1, 0, 0, 60)
-    partFrame.BackgroundTransparency = 1
-    partFrame.Parent = aimbotTab
-
-    local partLabel = Instance.new("TextLabel")
-    partLabel.Size = UDim2.new(1, 0, 0, 18)
-    partLabel.BackgroundTransparency = 1
-    partLabel.Text = "Parte Alvo"
-    partLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-    partLabel.TextSize = 12
-    partLabel.Font = Enum.Font.Gotham
-    partLabel.TextXAlignment = Enum.TextXAlignment.Left
-    partLabel.Parent = partFrame
-
-    local btnRow = Instance.new("Frame")
-    btnRow.Size = UDim2.new(1, 0, 0, 30)
-    btnRow.Position = UDim2.new(0, 0, 0, 22)
-    btnRow.BackgroundTransparency = 1
-    btnRow.Parent = partFrame
-
-    local rowLayout = Instance.new("UIListLayout")
-    rowLayout.FillDirection = Enum.FillDirection.Horizontal
-    rowLayout.Padding = UDim.new(0, 5)
-    rowLayout.Parent = btnRow
-
-    local partButtons = {}
-    for _, option in ipairs({ "Head", "Torso", "Closest" }) do
-        local btn = Instance.new("TextButton")
-        btn.Size = UDim2.new(0, 90, 1, 0)
-        btn.BackgroundColor3 = Settings.TargetPart == option and Color3.fromRGB(80, 140, 255) or Color3.fromRGB(45, 45, 60)
-        btn.Text = option
-        btn.TextColor3 = Color3.new(1, 1, 1)
-        btn.TextSize = 11
-        btn.Font = Enum.Font.Gotham
-        btn.BorderSizePixel = 0
-        btn.Parent = btnRow
-
-        local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = btn
-        partButtons[option] = btn
-
-        btn.MouseButton1Click:Connect(function()
-            Settings.TargetPart = option
-            for k, b in pairs(partButtons) do
-                b.BackgroundColor3 = (k == option) and Color3.fromRGB(80, 140, 255) or Color3.fromRGB(45, 45, 60)
-            end
-            SaveConfig()
-        end)
     end
 
-    -- ABA HITBOX
-    local hitboxTab = CreateTab("Hitbox")
-    CreateToggle(hitboxTab, "Ativar Hitbox", Settings.HitboxEnabled, function(v) ToggleHitbox(v) end)
-    CreateSlider(hitboxTab, "Tamanho", 1, 20, Settings.HitboxSize, function(v) Settings.HitboxSize = v end)
+    local sliderBtn = Instance.new("TextButton")
+    sliderBtn.Size = UDim2.new(1, 0, 3, 0)
+    sliderBtn.Position = UDim2.new(0, 0, 0, -8)
+    sliderBtn.BackgroundTransparency = 1
+    sliderBtn.Text = ""
+    sliderBtn.Parent = trackBg
 
-    -- ABA ESP
-    local espTab = CreateTab("ESP")
-    CreateToggle(espTab, "Ativar ESP", Settings.ESPEnabled, function(v) ToggleESP(v) end)
-    CreateToggle(espTab, "Nome", Settings.ESPName, function(v) Settings.ESPName = v end)
-    CreateToggle(espTab, "Distância", Settings.ESPDistance, function(v) Settings.ESPDistance = v end)
-    CreateToggle(espTab, "Barra de Vida", Settings.ESPHealth, function(v) Settings.ESPHealth = v end)
-    CreateToggle(espTab, "Highlight", Settings.ESPHighlight, function(v)
-        Settings.ESPHighlight = v
-        if Settings.ESPEnabled then ToggleESP(false); ToggleESP(true) end
+    sliderBtn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            updateSlider(input)
+        end
     end)
-    CreateToggle(espTab, "Team Check ESP", Settings.ESPTeamCheck, function(v) Settings.ESPTeamCheck = v end)
-
-    -- ABA CONFIG
-    local configTab = CreateTab("Config")
-
-    local infoLabel = Instance.new("TextLabel")
-    infoLabel.Size = UDim2.new(1, 0, 0, 90)
-    infoLabel.BackgroundTransparency = 1
-    infoLabel.Text = "Script v1.6\n• FOV Circle corrigido\n• Aparece só com 'Mostrar FOV'\n• Save/Load automático"
-    infoLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
-    infoLabel.TextSize = 11
-    infoLabel.Font = Enum.Font.Gotham
-    infoLabel.TextWrapped = true
-    infoLabel.Parent = configTab
-
-    CreateButton(configTab, "💾 Salvar Configuração", Color3.fromRGB(0, 160, 80), function()
-        if SaveConfig() then
-            StarterGui:SetCore("SendNotification", { Title = "Combat Suite", Text = "✅ Salvo!", Duration = 2 })
+    sliderBtn.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            updateSlider(input)
+        end
+    end)
+    sliderBtn.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+            SaveConfig()
         end
     end)
 
-    CreateButton(configTab, "📂 Carregar Configuração", Color3.fromRGB(60, 120, 200), function()
-        LoadConfig()
-        StarterGui:SetCore("SendNotification", { Title = "Combat Suite", Text = "📂 Carregado!", Duration = 2 })
-    end)
-
-    CreateButton(configTab, "🔄 Resetar Padrão", Color3.fromRGB(200, 80, 80), function()
-        ResetConfig()
-        StarterGui:SetCore("SendNotification", { Title = "Combat Suite", Text = "🔄 Resetado!", Duration = 2 })
-    end)
-
-    if tabs["Aimbot"] then tabs["Aimbot"].button:Fire() end
-
-    return mainFrame, toggleBtn
+    main.Visible = false
+    return main
 end
 
 -- ============================================================
 -- INICIALIZAÇÃO
 -- ============================================================
-local mainFrame, toggleBtn = CreateUI()
+CreateUI()
 CreateFovCircle()
 UpdateFovCircle()
 
-if Settings.AimbotEnabled then ToggleAimbot(true) end
-if Settings.HitboxEnabled then ToggleHitbox(true) end
-if Settings.ESPEnabled then ToggleESP(true) end
-
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    if input.KeyCode == Settings.AimbotKey then
-        ToggleAimbot(not Settings.AimbotEnabled)
-    end
-end)
+if Settings.AimbotEnabled then SetAimbot(true) end
 
 StarterGui:SetCore("SendNotification", {
-    Title = "Combat Suite v1.6",
-    Text = "FOV Circle corrigido!",
+    Title = "Rafild Aimbot",
+    Text = "Carregado com sucesso!",
     Duration = 3,
 })
 
-print("✅ Combat Suite v1.6 carregado!")
+print("✅ Rafild Aimbot carregado!")
