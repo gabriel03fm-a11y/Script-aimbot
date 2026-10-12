@@ -1,10 +1,11 @@
 --[[
-    SCRIPT: Aimbot + Hitbox Extender + ESP (Mobile UI) - v1.2
-    CORREÇÕES v1.2:
-      - Wall Check (não mira através de paredes)
-      - FOV rigoroso (só pega quem está dentro do círculo)
-      - Círculo do FOV em ScreenGui separado (sempre visível)
-      - Mira para de puxar quando alvo sai do FOV
+    SCRIPT: Aimbot + Hitbox Extender + ESP (Mobile UI) - v1.3
+    NOVIDADES v1.3:
+      - Aimbot só pega alvo VISÍVEL NA TELA (on-screen rigoroso)
+      - Verifica Z > 0 (na frente da câmera)
+      - Verifica limites X/Y da tela
+      - Wall Check mantido
+      - FOV visual mantido
 --]]
 
 -- ============================================================
@@ -33,8 +34,9 @@ local Settings = {
     TargetPart = "Head",
     TeamCheck = true,
     MaxDistance = 500,
-    WallCheck = true,           -- 🔥 NOVO
+    WallCheck = true,
     ShowFovCircle = true,
+    ScreenMargin = 0,   -- margem em pixels (aumente para afastar das bordas da tela)
     -- Hitbox
     HitboxEnabled = false,
     HitboxSize = 5,
@@ -57,7 +59,7 @@ local AimbotBindName = "AimbotRenderStep"
 local HitboxConnections = {}
 local ESPObjects = {}
 local FovCircle = nil
-local FovGui = nil          -- 🔥 ScreenGui dedicado ao FOV
+local FovGui = nil
 local ScreenGui = nil
 
 -- ============================================================
@@ -101,7 +103,7 @@ local function GetTargetPart(character, partName)
     return character:FindFirstChild(partName)
 end
 
--- 🔥 NOVO: Verifica linha de visão (sem paredes entre câmera e alvo)
+-- Verifica linha de visão (sem paredes entre câmera e alvo)
 local function HasLineOfSight(targetPart)
     local myChar = LocalPlayer.Character
     if not myChar then return false end
@@ -120,11 +122,28 @@ local function HasLineOfSight(targetPart)
     return result == nil
 end
 
+-- 🔥 Verifica se o alvo está REALMENTE visível na tela
+local function IsOnScreen(targetPart)
+    local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+    if not onScreen then return false, nil end
+
+    local viewport = Camera.ViewportSize
+    local margin = Settings.ScreenMargin
+
+    -- Precisa estar NA FRENTE da câmera
+    if screenPos.Z <= 0 then return false, nil end
+
+    -- Precisa estar DENTRO dos limites da tela (com margem opcional)
+    if screenPos.X < margin or screenPos.X > viewport.X - margin then return false, nil end
+    if screenPos.Y < margin or screenPos.Y > viewport.Y - margin then return false, nil end
+
+    return true, screenPos
+end
+
 -- ============================================================
 -- AIMBOT
 -- ============================================================
 
--- Cria o círculo visual do FOV em ScreenGui separado (DisplayOrder alto)
 local function CreateFovCircle()
     if FovCircle then FovCircle:Destroy() end
     if FovGui then FovGui:Destroy() end
@@ -169,7 +188,7 @@ local function UpdateFovCircle()
     FovCircle.Visible = Settings.AimbotEnabled and Settings.ShowFovCircle
 end
 
--- Encontra alvo dentro do FOV, com wall check
+-- 🔥 Encontra alvo APENAS se estiver VISÍVEL NA TELA + dentro do FOV
 local function GetClosestTarget()
     local closestTarget = nil
     local shortestDist = math.huge
@@ -189,13 +208,15 @@ local function GetClosestTarget()
                 -- Filtro 1: distância máxima
                 local worldDist = (myPos - targetPart.Position).Magnitude
                 if worldDist <= Settings.MaxDistance then
-                    -- Filtro 2: visível na tela
-                    local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
-                    if onScreen then
-                        -- Filtro 3: dentro do FOV
+
+                    -- 🔥 Filtro 2: VISÍVEL NA TELA (rigoroso)
+                    local visible, screenPos = IsOnScreen(targetPart)
+                    if visible then
+                        -- Filtro 3: dentro do círculo do FOV
                         local screenDist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
                         if screenDist <= Settings.FOV and screenDist < shortestDist then
-                            -- Filtro 4: wall check
+
+                            -- Filtro 4: linha de visão livre (sem paredes)
                             if not Settings.WallCheck or HasLineOfSight(targetPart) then
                                 shortestDist = screenDist
                                 closestTarget = player
@@ -221,14 +242,14 @@ local function UpdateAimbot()
     local targetPart = GetTargetPart(target.Character, Settings.TargetPart)
     if not targetPart then return end
 
-    -- Revalida FOV antes de puxar
-    local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
-    if not onScreen then return end
+    -- 🔥 Revalida tudo antes de mover a câmera
+    local visible, screenPos = IsOnScreen(targetPart)
+    if not visible then return end
+
     local center = Camera.ViewportSize / 2
     local screenDist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
     if screenDist > Settings.FOV then return end
 
-    -- Revalida wall check
     if Settings.WallCheck and not HasLineOfSight(targetPart) then return end
 
     local targetCFrame = CFrame.new(Camera.CFrame.Position, targetPart.Position)
@@ -238,7 +259,6 @@ end
 
 local function ToggleAimbot(state)
     Settings.AimbotEnabled = state
-
     if state then
         RunService:UnbindFromRenderStep(AimbotBindName)
         RunService:BindToRenderStep(AimbotBindName, Enum.RenderPriority.Camera.Value - 1, UpdateAimbot)
@@ -246,7 +266,6 @@ local function ToggleAimbot(state)
         RunService:UnbindFromRenderStep(AimbotBindName)
         CurrentTarget = nil
     end
-
     UpdateFovCircle()
 end
 
@@ -571,7 +590,7 @@ local function CreateUI()
     titleLabel.Size = UDim2.new(1, -40, 1, 0)
     titleLabel.Position = UDim2.new(0, 10, 0, 0)
     titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = "⚔️ Combat Suite v1.2"
+    titleLabel.Text = "⚔️ Combat Suite v1.3"
     titleLabel.TextColor3 = Color3.new(1, 1, 1)
     titleLabel.TextSize = 15
     titleLabel.Font = Enum.Font.GothamBold
@@ -842,6 +861,10 @@ local function CreateUI()
         Settings.MaxDistance = v
     end)
 
+    CreateSlider(aimbotTab, "Margem da Tela", 0, 200, Settings.ScreenMargin, function(v)
+        Settings.ScreenMargin = v
+    end)
+
     CreateToggle(aimbotTab, "Team Check", Settings.TeamCheck, function(v)
         Settings.TeamCheck = v
     end)
@@ -942,9 +965,9 @@ local function CreateUI()
     local configTab = CreateTab("Config")
 
     local infoLabel = Instance.new("TextLabel")
-    infoLabel.Size = UDim2.new(1, 0, 0, 100)
+    infoLabel.Size = UDim2.new(1, 0, 0, 120)
     infoLabel.BackgroundTransparency = 1
-    infoLabel.Text = "Script v1.2\n• Wall Check ativado\n• FOV rigoroso\n• Círculo visual\n\nAtalho (PC): E = toggle Aimbot"
+    infoLabel.Text = "Script v1.3\n• Aimbot só em quem está VISÍVEL\n• Wall Check ativo\n• FOV rigoroso\n• Margem da tela ajustável\n\nAtalho (PC): E = toggle Aimbot"
     infoLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
     infoLabel.TextSize = 11
     infoLabel.Font = Enum.Font.Gotham
@@ -973,9 +996,9 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 end)
 
 StarterGui:SetCore("SendNotification", {
-    Title = "Combat Suite v1.2",
-    Text = "Wall Check + FOV rigoroso aplicados!",
+    Title = "Combat Suite v1.3",
+    Text = "Aimbot restrito ao campo de visão!",
     Duration = 3,
 })
 
-print("✅ Combat Suite v1.2 carregado!")
+print("✅ Combat Suite v1.3 carregado!")
