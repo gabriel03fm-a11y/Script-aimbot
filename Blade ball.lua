@@ -1,11 +1,10 @@
 --[[
-    SCRIPT: Aimbot + Hitbox Extender + ESP (Mobile UI) - v1.5
-    NOVIDADES v1.5:
-      - Wall Check DEFINITIVO usando GetPartsObscuringTarget
-      - Testa múltiplos pontos no caminho (pega paredes finas)
-      - NUNCA mira através de parede
-      - Save/Load de config mantido
-      - FOV rigoroso mantido
+    SCRIPT: Aimbot + Hitbox + ESP (Mobile UI) - v1.6
+    CORREÇÕES v1.6:
+      - FOV Circle agora aparece independente do Aimbot
+      - Fallback: gethui() → CoreGui → PlayerGui
+      - Círculo mais visível (com sombra)
+      - Wall Check definitivo mantido
 --]]
 
 -- ============================================================
@@ -23,9 +22,29 @@ local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
 -- ============================================================
--- SISTEMA DE CONFIG (SALVAR/CARREGAR)
+-- PARENT ROBUSTO PARA UI (gethui → CoreGui → PlayerGui)
 -- ============================================================
-local CONFIG_FILE = "combat_suite_v15.json"
+local function GetUIParent()
+    if gethui then
+        local ok, hui = pcall(gethui)
+        if ok and hui then return hui end
+    end
+    local ok, cg = pcall(function() return CoreGui end)
+    if ok and cg then
+        local ok2 = pcall(function()
+            local test = Instance.new("Folder")
+            test.Parent = cg
+            test:Destroy()
+        end)
+        if ok2 then return cg end
+    end
+    return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+-- ============================================================
+-- CONFIG (SALVAR/CARREGAR)
+-- ============================================================
+local CONFIG_FILE = "combat_suite_v16.json"
 
 local DefaultSettings = {
     AimbotEnabled = false,
@@ -55,34 +74,23 @@ local function Serialize(tbl)
     local parts = {}
     for k, v in pairs(tbl) do
         local val
-        if type(v) == "string" then
-            val = string.format("%q", v)
-        elseif type(v) == "boolean" or type(v) == "number" then
-            val = tostring(v)
-        else
-            val = "nil"
-        end
+        if type(v) == "string" then val = string.format("%q", v)
+        elseif type(v) == "boolean" or type(v) == "number" then val = tostring(v)
+        else val = "nil" end
         table.insert(parts, string.format("  [%q] = %s", k, val))
     end
     return "{\n" .. table.concat(parts, ",\n") .. "\n}"
 end
 
 local function Deserialize(str)
-    local ok, result = pcall(function()
-        return loadstring("return " .. str)()
-    end)
-    if ok and type(result) == "table" then
-        return result
-    end
+    local ok, result = pcall(function() return loadstring("return " .. str)() end)
+    if ok and type(result) == "table" then return result end
     return nil
 end
 
 local function SaveConfig()
     if not writefile then return false end
-    local ok = pcall(function()
-        writefile(CONFIG_FILE, Serialize(Settings))
-    end)
-    return ok
+    return pcall(function() writefile(CONFIG_FILE, Serialize(Settings)) end)
 end
 
 local function LoadConfig()
@@ -93,9 +101,7 @@ local function LoadConfig()
     local tbl = Deserialize(data)
     if not tbl then return false end
     for k, v in pairs(tbl) do
-        if DefaultSettings[k] ~= nil then
-            Settings[k] = v
-        end
+        if DefaultSettings[k] ~= nil then Settings[k] = v end
     end
     if type(Settings.AimbotKey) == "string" then
         local ok2, keyCode = pcall(function() return Enum.KeyCode[Settings.AimbotKey] end)
@@ -105,12 +111,8 @@ local function LoadConfig()
 end
 
 local function ResetConfig()
-    for k, v in pairs(DefaultSettings) do
-        Settings[k] = v
-    end
-    if writefile and delfile then
-        pcall(function() delfile(CONFIG_FILE) end)
-    end
+    for k, v in pairs(DefaultSettings) do Settings[k] = v end
+    if writefile and delfile then pcall(function() delfile(CONFIG_FILE) end) end
 end
 
 LoadConfig()
@@ -171,7 +173,6 @@ end
 local function HasLineOfSight(targetPart)
     local myChar = LocalPlayer.Character
     if not myChar then return false end
-
     local targetCharacter = targetPart.Parent
     if not targetCharacter then return false end
 
@@ -181,41 +182,32 @@ local function HasLineOfSight(targetPart)
             { myChar, targetCharacter, Camera }
         )
     end)
+    if success and obscuringParts then return #obscuringParts == 0 end
 
-    if success and obscuringParts then
-        return #obscuringParts == 0
-    end
-
-    -- Fallback com raycast
     local origin = Camera.CFrame.Position
     local direction = targetPart.Position - origin
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Exclude
     params.FilterDescendantsInstances = { myChar, targetCharacter, Camera }
     params.IgnoreWater = true
-
     local result = Workspace:Raycast(origin, direction, params)
     return result == nil
 end
 
--- 🔥 VISÃO LIMPA — testa múltiplos pontos (pega paredes finas)
 local function HasClearView(targetPart)
     local myChar = LocalPlayer.Character
     if not myChar then return false end
-
     local targetCharacter = targetPart.Parent
     if not targetCharacter then return false end
 
     local cameraPos = Camera.CFrame.Position
     local targetPos = targetPart.Position
-
     local testPoints = {
         targetPos,
         cameraPos:Lerp(targetPos, 0.25),
         cameraPos:Lerp(targetPos, 0.5),
         cameraPos:Lerp(targetPos, 0.75),
     }
-
     for _, point in ipairs(testPoints) do
         local success, obscuringParts = pcall(function()
             return Camera:GetPartsObscuringTarget(
@@ -223,45 +215,47 @@ local function HasClearView(targetPart)
                 { myChar, targetCharacter, Camera }
             )
         end)
-
         if success and obscuringParts and #obscuringParts > 0 then
             return false
         end
     end
-
     return true
 end
 
--- FOV: verifica se está na tela
 local function GetScreenPosition(targetPart)
     local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
     if not onScreen then return nil end
-
     local viewport = Camera.ViewportSize
     local margin = Settings.ScreenMargin
-
     if screenPos.Z <= 0 then return nil end
     if screenPos.X < margin or screenPos.X > viewport.X - margin then return nil end
     if screenPos.Y < margin or screenPos.Y > viewport.Y - margin then return nil end
-
     return Vector2.new(screenPos.X, screenPos.Y)
 end
 
 -- ============================================================
--- AIMBOT
+-- FOV CIRCLE — CORRIGIDO v1.6
 -- ============================================================
 local function CreateFovCircle()
-    if FovCircle then FovCircle:Destroy() end
-    if FovGui then FovGui:Destroy() end
+    if FovCircle then
+        pcall(function() FovCircle:Destroy() end)
+        FovCircle = nil
+    end
+    if FovGui then
+        pcall(function() FovGui:Destroy() end)
+        FovGui = nil
+    end
 
+    -- Cria ScreenGui com fallback robusto
     FovGui = Instance.new("ScreenGui")
-    FovGui.Name = "FovGui"
+    FovGui.Name = "FovGui_" .. tostring(math.random(1000, 9999))
     FovGui.ResetOnSpawn = false
     FovGui.IgnoreGuiInset = true
     FovGui.DisplayOrder = 999999
     FovGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    FovGui.Parent = CoreGui
+    FovGui.Parent = GetUIParent()
 
+    -- Frame do círculo
     local circle = Instance.new("Frame")
     circle.Name = "FovCircle"
     circle.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -270,17 +264,26 @@ local function CreateFovCircle()
     circle.BackgroundTransparency = 1
     circle.BorderSizePixel = 0
     circle.ZIndex = 100
-    circle.Visible = Settings.AimbotEnabled and Settings.ShowFovCircle
+    circle.Visible = Settings.ShowFovCircle   -- 🔥 só depende de "Mostrar FOV"
     circle.Parent = FovGui
 
     local corner = Instance.new("UICorner")
     corner.CornerRadius = UDim.new(1, 0)
     corner.Parent = circle
 
+    -- Sombra interna (dá destaque)
+    local strokeOuter = Instance.new("UIStroke")
+    strokeOuter.Thickness = 4
+    strokeOuter.Color = Color3.fromRGB(0, 0, 0)
+    strokeOuter.Transparency = 0.6
+    strokeOuter.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    strokeOuter.Parent = circle
+
+    -- Linha principal (azul)
     local stroke = Instance.new("UIStroke")
     stroke.Thickness = 2
-    stroke.Color = Color3.fromRGB(80, 200, 255)
-    stroke.Transparency = 0.1
+    stroke.Color = Color3.fromRGB(0, 200, 255)
+    stroke.Transparency = 0
     stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
     stroke.Parent = circle
 
@@ -288,16 +291,22 @@ local function CreateFovCircle()
 end
 
 local function UpdateFovCircle()
-    if not FovCircle then return end
-    FovCircle.Size = UDim2.new(0, Settings.FOV * 2, 0, Settings.FOV * 2)
-    FovCircle.Visible = Settings.AimbotEnabled and Settings.ShowFovCircle
+    if not FovCircle then
+        CreateFovCircle()
+    end
+    if FovCircle then
+        FovCircle.Size = UDim2.new(0, Settings.FOV * 2, 0, Settings.FOV * 2)
+        FovCircle.Visible = Settings.ShowFovCircle   -- 🔥 independente do Aimbot
+    end
 end
 
+-- ============================================================
+-- AIMBOT
+-- ============================================================
 local function GetClosestTarget()
     local closestTarget = nil
     local shortestDist = math.huge
     local center = Camera.ViewportSize / 2
-
     local myChar = LocalPlayer.Character
     if not myChar then return nil end
     local myRoot = myChar:FindFirstChild("HumanoidRootPart")
@@ -315,12 +324,10 @@ local function GetClosestTarget()
                     if screenVec then
                         local screenDist = (screenVec - center).Magnitude
                         if screenDist <= Settings.FOV then
-                            -- 🔥 VISÃO LIMPA
                             local clearView = true
                             if Settings.WallCheck then
                                 clearView = HasClearView(targetPart)
                             end
-
                             if clearView and screenDist < shortestDist then
                                 shortestDist = screenDist
                                 closestTarget = player
@@ -336,10 +343,8 @@ end
 
 local function UpdateAimbot()
     if not Settings.AimbotEnabled then return end
-
     local target = GetClosestTarget()
     CurrentTarget = target
-
     if not target or not target.Character then return end
 
     local targetPart = GetTargetPart(target.Character, Settings.TargetPart)
@@ -352,7 +357,6 @@ local function UpdateAimbot()
     local screenDist = (screenVec - center).Magnitude
     if screenDist > Settings.FOV then return end
 
-    -- 🔥 Revalida visão
     if Settings.WallCheck and not HasClearView(targetPart) then return end
 
     local targetCFrame = CFrame.new(Camera.CFrame.Position, targetPart.Position)
@@ -369,7 +373,6 @@ local function ToggleAimbot(state)
         RunService:UnbindFromRenderStep(AimbotBindName)
         CurrentTarget = nil
     end
-    UpdateFovCircle()
     SaveConfig()
 end
 
@@ -379,7 +382,6 @@ end
 local function ApplyHitbox(player)
     if player == LocalPlayer then return end
     if not IsAlive(player) or not IsEnemy(player) then return end
-
     for _, part in ipairs(player.Character:GetChildren()) do
         if part:IsA("BasePart") then
             if not part:GetAttribute("OriginalSize") then
@@ -425,9 +427,7 @@ local function ToggleHitbox(state)
             end)
         end
     else
-        for _, player in ipairs(Players:GetPlayers()) do
-            RestoreHitbox(player)
-        end
+        for _, player in ipairs(Players:GetPlayers()) do RestoreHitbox(player) end
         if HitboxConnections.loop then
             HitboxConnections.loop:Disconnect()
             HitboxConnections.loop = nil
@@ -450,7 +450,6 @@ end
 local function CreateESP(player)
     if player == LocalPlayer then return end
     if not IsAlive(player) then return end
-
     DestroyESP(player)
 
     local character = player.Character
@@ -463,7 +462,6 @@ local function CreateESP(player)
     local highlight = nil
     if Settings.ESPHighlight then
         highlight = Instance.new("Highlight")
-        highlight.Name = "ESP_Highlight"
         highlight.Adornee = character
         highlight.FillColor = color
         highlight.OutlineColor = Color3.new(1, 1, 1)
@@ -473,7 +471,6 @@ local function CreateESP(player)
     end
 
     local billboard = Instance.new("BillboardGui")
-    billboard.Name = "ESP_Billboard"
     billboard.Adornee = rootPart
     billboard.Size = UDim2.new(0, 200, 0, 100)
     billboard.StudsOffset = Vector3.new(0, 3, 0)
@@ -481,7 +478,6 @@ local function CreateESP(player)
     billboard.Parent = character
 
     local nameLabel = Instance.new("TextLabel")
-    nameLabel.Name = "ESP_Name"
     nameLabel.Size = UDim2.new(1, 0, 0.3, 0)
     nameLabel.BackgroundTransparency = 1
     nameLabel.Text = player.DisplayName or player.Name
@@ -493,7 +489,6 @@ local function CreateESP(player)
     nameLabel.Parent = billboard
 
     local distLabel = Instance.new("TextLabel")
-    distLabel.Name = "ESP_Distance"
     distLabel.Size = UDim2.new(1, 0, 0.2, 0)
     distLabel.Position = UDim2.new(0, 0, 0.3, 0)
     distLabel.BackgroundTransparency = 1
@@ -506,7 +501,6 @@ local function CreateESP(player)
     distLabel.Parent = billboard
 
     local healthBarBg = Instance.new("Frame")
-    healthBarBg.Name = "ESP_HealthBg"
     healthBarBg.Size = UDim2.new(0.8, 0, 0.08, 0)
     healthBarBg.Position = UDim2.new(0.1, 0, 0.5, 0)
     healthBarBg.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
@@ -515,19 +509,15 @@ local function CreateESP(player)
     healthBarBg.Parent = billboard
 
     local healthBar = Instance.new("Frame")
-    healthBar.Name = "ESP_HealthFill"
     healthBar.Size = UDim2.new(1, 0, 1, 0)
     healthBar.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
     healthBar.BorderSizePixel = 0
     healthBar.Parent = healthBarBg
 
     ESPObjects[player] = {
-        Highlight = highlight,
-        Billboard = billboard,
-        NameLabel = nameLabel,
-        DistanceLabel = distLabel,
-        HealthBar = healthBar,
-        HealthBg = healthBarBg,
+        Highlight = highlight, Billboard = billboard,
+        NameLabel = nameLabel, DistanceLabel = distLabel,
+        HealthBar = healthBar, HealthBg = healthBarBg,
     }
 end
 
@@ -537,7 +527,6 @@ local function UpdateESP()
             DestroyESP(player)
             continue
         end
-
         local character = player.Character
         local humanoid = character:FindFirstChildOfClass("Humanoid")
         local rootPart = character:FindFirstChild("HumanoidRootPart")
@@ -545,14 +534,12 @@ local function UpdateESP()
             DestroyESP(player)
             continue
         end
-
         local color = IsEnemy(player) and Color3.fromRGB(255, 50, 50) or Color3.fromRGB(50, 255, 50)
         if esp.Highlight then esp.Highlight.FillColor = color end
         if esp.NameLabel then
             esp.NameLabel.TextColor3 = color
             esp.NameLabel.Visible = Settings.ESPName
         end
-
         if esp.DistanceLabel then
             local myChar = LocalPlayer.Character
             if myChar and myChar:FindFirstChild("HumanoidRootPart") then
@@ -561,19 +548,13 @@ local function UpdateESP()
             end
             esp.DistanceLabel.Visible = Settings.ESPDistance
         end
-
         if esp.HealthBg then esp.HealthBg.Visible = Settings.ESPHealth end
-
         if esp.HealthBar then
             local hp = humanoid.Health / math.max(humanoid.MaxHealth, 1)
             esp.HealthBar.Size = UDim2.new(hp, 0, 1, 0)
-            if hp > 0.5 then
-                esp.HealthBar.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
-            elseif hp > 0.25 then
-                esp.HealthBar.BackgroundColor3 = Color3.fromRGB(255, 255, 0)
-            else
-                esp.HealthBar.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
-            end
+            if hp > 0.5 then esp.HealthBar.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+            elseif hp > 0.25 then esp.HealthBar.BackgroundColor3 = Color3.fromRGB(255, 255, 0)
+            else esp.HealthBar.BackgroundColor3 = Color3.fromRGB(255, 0, 0) end
         end
     end
 end
@@ -606,7 +587,7 @@ local function ToggleESP(state)
 end
 
 -- ============================================================
--- CICLO DE VIDA DOS JOGADORES
+-- CICLO DE VIDA
 -- ============================================================
 local function OnCharacterAdded(player, character)
     task.wait(0.5)
@@ -618,8 +599,7 @@ for _, player in ipairs(Players:GetPlayers()) do
     if player ~= LocalPlayer then
         player.CharacterAdded:Connect(function(c) OnCharacterAdded(player, c) end)
         player.CharacterRemoving:Connect(function()
-            DestroyESP(player)
-            RestoreHitbox(player)
+            DestroyESP(player); RestoreHitbox(player)
         end)
     end
 end
@@ -627,30 +607,27 @@ end
 Players.PlayerAdded:Connect(function(player)
     player.CharacterAdded:Connect(function(c) OnCharacterAdded(player, c) end)
     player.CharacterRemoving:Connect(function()
-        DestroyESP(player)
-        RestoreHitbox(player)
+        DestroyESP(player); RestoreHitbox(player)
     end)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
-    DestroyESP(player)
-    RestoreHitbox(player)
+    DestroyESP(player); RestoreHitbox(player)
 end)
 
 -- ============================================================
--- INTERFACE
+-- UI
 -- ============================================================
 local function CreateUI()
     local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "MobileCombatUI"
+    screenGui.Name = "MobileCombatUI_" .. tostring(math.random(1000, 9999))
     screenGui.ResetOnSpawn = false
     screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     screenGui.IgnoreGuiInset = true
-    screenGui.Parent = CoreGui
+    screenGui.Parent = GetUIParent()
     ScreenGui = screenGui
 
     local toggleBtn = Instance.new("TextButton")
-    toggleBtn.Name = "ToggleBtn"
     toggleBtn.Size = UDim2.new(0, 55, 0, 55)
     toggleBtn.Position = UDim2.new(0, 20, 0.5, -27)
     toggleBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
@@ -668,7 +645,6 @@ local function CreateUI()
     btnCorner.Parent = toggleBtn
 
     local mainFrame = Instance.new("Frame")
-    mainFrame.Name = "MainFrame"
     mainFrame.Size = UDim2.new(0, 320, 0, 440)
     mainFrame.Position = UDim2.new(0.5, -160, 0.5, -220)
     mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
@@ -696,7 +672,7 @@ local function CreateUI()
     titleLabel.Size = UDim2.new(1, -40, 1, 0)
     titleLabel.Position = UDim2.new(0, 10, 0, 0)
     titleLabel.BackgroundTransparency = 1
-    titleLabel.Text = "⚔️ Combat Suite v1.5"
+    titleLabel.Text = "⚔️ Combat Suite v1.6"
     titleLabel.TextColor3 = Color3.new(1, 1, 1)
     titleLabel.TextSize = 15
     titleLabel.Font = Enum.Font.GothamBold
@@ -718,13 +694,8 @@ local function CreateUI()
     closeCorner.CornerRadius = UDim.new(1, 0)
     closeCorner.Parent = closeBtn
 
-    closeBtn.MouseButton1Click:Connect(function()
-        mainFrame.Visible = false
-    end)
-
-    toggleBtn.MouseButton1Click:Connect(function()
-        mainFrame.Visible = not mainFrame.Visible
-    end)
+    closeBtn.MouseButton1Click:Connect(function() mainFrame.Visible = false end)
+    toggleBtn.MouseButton1Click:Connect(function() mainFrame.Visible = not mainFrame.Visible end)
 
     local tabContainer = Instance.new("Frame")
     tabContainer.Size = UDim2.new(1, -20, 0, 35)
@@ -757,9 +728,7 @@ local function CreateUI()
         tabBtn.BorderSizePixel = 0
         tabBtn.Parent = tabContainer
 
-        local tabCorner = Instance.new("UICorner")
-        tabCorner.CornerRadius = UDim.new(0, 6)
-        tabCorner.Parent = tabBtn
+        local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = tabBtn
 
         local content = Instance.new("ScrollingFrame")
         content.Size = UDim2.new(1, 0, 1, 0)
@@ -814,9 +783,7 @@ local function CreateUI()
         toggleBg.BorderSizePixel = 0
         toggleBg.Parent = frame
 
-        local bgCorner = Instance.new("UICorner")
-        bgCorner.CornerRadius = UDim.new(1, 0)
-        bgCorner.Parent = toggleBg
+        local bgCorner = Instance.new("UICorner"); bgCorner.CornerRadius = UDim.new(1, 0); bgCorner.Parent = toggleBg
 
         local knob = Instance.new("Frame")
         knob.Size = UDim2.new(0, 18, 0, 18)
@@ -825,9 +792,7 @@ local function CreateUI()
         knob.BorderSizePixel = 0
         knob.Parent = toggleBg
 
-        local knobCorner = Instance.new("UICorner")
-        knobCorner.CornerRadius = UDim.new(1, 0)
-        knobCorner.Parent = knob
+        local knobCorner = Instance.new("UICorner"); knobCorner.CornerRadius = UDim.new(1, 0); knobCorner.Parent = knob
 
         local isOn = default
         local btn = Instance.new("TextButton")
@@ -872,9 +837,7 @@ local function CreateUI()
         sliderBg.BorderSizePixel = 0
         sliderBg.Parent = frame
 
-        local sliderCorner = Instance.new("UICorner")
-        sliderCorner.CornerRadius = UDim.new(1, 0)
-        sliderCorner.Parent = sliderBg
+        local sliderCorner = Instance.new("UICorner"); sliderCorner.CornerRadius = UDim.new(1, 0); sliderCorner.Parent = sliderBg
 
         local initPct = math.clamp((default - min) / (max - min), 0, 1)
 
@@ -884,9 +847,7 @@ local function CreateUI()
         fill.BorderSizePixel = 0
         fill.Parent = sliderBg
 
-        local fillCorner = Instance.new("UICorner")
-        fillCorner.CornerRadius = UDim.new(1, 0)
-        fillCorner.Parent = fill
+        local fillCorner = Instance.new("UICorner"); fillCorner.CornerRadius = UDim.new(1, 0); fillCorner.Parent = fill
 
         local knob = Instance.new("Frame")
         knob.Size = UDim2.new(0, 16, 0, 16)
@@ -896,9 +857,7 @@ local function CreateUI()
         knob.ZIndex = 2
         knob.Parent = sliderBg
 
-        local knobCorner = Instance.new("UICorner")
-        knobCorner.CornerRadius = UDim.new(1, 0)
-        knobCorner.Parent = knob
+        local knobCorner = Instance.new("UICorner"); knobCorner.CornerRadius = UDim.new(1, 0); knobCorner.Parent = knob
 
         local dragging = false
 
@@ -919,8 +878,7 @@ local function CreateUI()
 
         btn.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                dragging = true
-                update(input)
+                dragging = true; update(input)
             end
         end)
         btn.InputChanged:Connect(function(input)
@@ -930,8 +888,7 @@ local function CreateUI()
         end)
         btn.InputEnded:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-                dragging = false
-                SaveConfig()
+                dragging = false; SaveConfig()
             end
         end)
 
@@ -949,14 +906,11 @@ local function CreateUI()
         btn.BorderSizePixel = 0
         btn.Parent = parent
 
-        local c = Instance.new("UICorner")
-        c.CornerRadius = UDim.new(0, 6)
-        c.Parent = btn
+        local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = btn
 
         btn.MouseButton1Click:Connect(function()
             if callback then callback() end
         end)
-
         return btn
     end
 
@@ -997,6 +951,7 @@ local function CreateUI()
         Settings.TeamCheck = v
     end)
 
+    -- Parte Alvo
     local partFrame = Instance.new("Frame")
     partFrame.Size = UDim2.new(1, 0, 0, 60)
     partFrame.BackgroundTransparency = 1
@@ -1023,10 +978,8 @@ local function CreateUI()
     rowLayout.Padding = UDim.new(0, 5)
     rowLayout.Parent = btnRow
 
-    local partOptions = { "Head", "Torso", "Closest" }
     local partButtons = {}
-
-    for _, option in ipairs(partOptions) do
+    for _, option in ipairs({ "Head", "Torso", "Closest" }) do
         local btn = Instance.new("TextButton")
         btn.Size = UDim2.new(0, 90, 1, 0)
         btn.BackgroundColor3 = Settings.TargetPart == option and Color3.fromRGB(80, 140, 255) or Color3.fromRGB(45, 45, 60)
@@ -1037,10 +990,7 @@ local function CreateUI()
         btn.BorderSizePixel = 0
         btn.Parent = btnRow
 
-        local c = Instance.new("UICorner")
-        c.CornerRadius = UDim.new(0, 6)
-        c.Parent = btn
-
+        local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 6); c.Parent = btn
         partButtons[option] = btn
 
         btn.MouseButton1Click:Connect(function()
@@ -1054,34 +1004,20 @@ local function CreateUI()
 
     -- ABA HITBOX
     local hitboxTab = CreateTab("Hitbox")
-
-    CreateToggle(hitboxTab, "Ativar Hitbox", Settings.HitboxEnabled, function(v)
-        ToggleHitbox(v)
-    end)
-
-    CreateSlider(hitboxTab, "Tamanho", 1, 20, Settings.HitboxSize, function(v)
-        Settings.HitboxSize = v
-    end)
+    CreateToggle(hitboxTab, "Ativar Hitbox", Settings.HitboxEnabled, function(v) ToggleHitbox(v) end)
+    CreateSlider(hitboxTab, "Tamanho", 1, 20, Settings.HitboxSize, function(v) Settings.HitboxSize = v end)
 
     -- ABA ESP
     local espTab = CreateTab("ESP")
-
-    CreateToggle(espTab, "Ativar ESP", Settings.ESPEnabled, function(v)
-        ToggleESP(v)
-    end)
+    CreateToggle(espTab, "Ativar ESP", Settings.ESPEnabled, function(v) ToggleESP(v) end)
     CreateToggle(espTab, "Nome", Settings.ESPName, function(v) Settings.ESPName = v end)
     CreateToggle(espTab, "Distância", Settings.ESPDistance, function(v) Settings.ESPDistance = v end)
     CreateToggle(espTab, "Barra de Vida", Settings.ESPHealth, function(v) Settings.ESPHealth = v end)
     CreateToggle(espTab, "Highlight", Settings.ESPHighlight, function(v)
         Settings.ESPHighlight = v
-        if Settings.ESPEnabled then
-            ToggleESP(false)
-            ToggleESP(true)
-        end
+        if Settings.ESPEnabled then ToggleESP(false); ToggleESP(true) end
     end)
-    CreateToggle(espTab, "Team Check ESP", Settings.ESPTeamCheck, function(v)
-        Settings.ESPTeamCheck = v
-    end)
+    CreateToggle(espTab, "Team Check ESP", Settings.ESPTeamCheck, function(v) Settings.ESPTeamCheck = v end)
 
     -- ABA CONFIG
     local configTab = CreateTab("Config")
@@ -1089,7 +1025,7 @@ local function CreateUI()
     local infoLabel = Instance.new("TextLabel")
     infoLabel.Size = UDim2.new(1, 0, 0, 90)
     infoLabel.BackgroundTransparency = 1
-    infoLabel.Text = "Script v1.5\n• Wall Check DEFINITIVO\n• NUNCA mira através de parede\n• Save/Load automático"
+    infoLabel.Text = "Script v1.6\n• FOV Circle corrigido\n• Aparece só com 'Mostrar FOV'\n• Save/Load automático"
     infoLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
     infoLabel.TextSize = 11
     infoLabel.Font = Enum.Font.Gotham
@@ -1098,36 +1034,21 @@ local function CreateUI()
 
     CreateButton(configTab, "💾 Salvar Configuração", Color3.fromRGB(0, 160, 80), function()
         if SaveConfig() then
-            StarterGui:SetCore("SendNotification", {
-                Title = "Combat Suite",
-                Text = "✅ Configuração salva!",
-                Duration = 2,
-            })
+            StarterGui:SetCore("SendNotification", { Title = "Combat Suite", Text = "✅ Salvo!", Duration = 2 })
         end
     end)
 
     CreateButton(configTab, "📂 Carregar Configuração", Color3.fromRGB(60, 120, 200), function()
-        if LoadConfig() then
-            StarterGui:SetCore("SendNotification", {
-                Title = "Combat Suite",
-                Text = "📂 Config carregada!",
-                Duration = 2,
-            })
-        end
+        LoadConfig()
+        StarterGui:SetCore("SendNotification", { Title = "Combat Suite", Text = "📂 Carregado!", Duration = 2 })
     end)
 
     CreateButton(configTab, "🔄 Resetar Padrão", Color3.fromRGB(200, 80, 80), function()
         ResetConfig()
-        StarterGui:SetCore("SendNotification", {
-            Title = "Combat Suite",
-            Text = "🔄 Config resetada!",
-            Duration = 2,
-        })
+        StarterGui:SetCore("SendNotification", { Title = "Combat Suite", Text = "🔄 Resetado!", Duration = 2 })
     end)
 
-    if tabs["Aimbot"] then
-        tabs["Aimbot"].button:Fire()
-    end
+    if tabs["Aimbot"] then tabs["Aimbot"].button:Fire() end
 
     return mainFrame, toggleBtn
 end
@@ -1151,9 +1072,9 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 end)
 
 StarterGui:SetCore("SendNotification", {
-    Title = "Combat Suite v1.5",
-    Text = "Wall Check definitivo aplicado!",
+    Title = "Combat Suite v1.6",
+    Text = "FOV Circle corrigido!",
     Duration = 3,
 })
 
-print("✅ Combat Suite v1.5 carregado!")
+print("✅ Combat Suite v1.6 carregado!")
